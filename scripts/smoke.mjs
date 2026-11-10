@@ -15,6 +15,30 @@ function parse(result) {
   try {
     return JSON.parse(text);
   } catch {
+    const start = text.indexOf("{");
+    if (start >= 0) {
+      let depth = 0;
+      let inString = false;
+      let escaped = false;
+      for (let i = start; i < text.length; i += 1) {
+        const char = text[i];
+        if (inString) {
+          if (escaped) escaped = false;
+          else if (char === "\\") escaped = true;
+          else if (char === '"') inString = false;
+          continue;
+        }
+        if (char === '"') inString = true;
+        else if (char === "{") depth += 1;
+        else if (char === "}" && --depth === 0) {
+          try {
+            return JSON.parse(text.slice(start, i + 1));
+          } catch {
+            break;
+          }
+        }
+      }
+    }
     return text;
   }
 }
@@ -30,6 +54,19 @@ function check(name, condition, detail = "") {
 }
 
 const fixture = http.createServer((req, res) => {
+  if (req.url === "/captcha-unsolved") {
+    res.writeHead(200, { "content-type": "text/html" });
+    res.end(`<!doctype html><title>Security check</title><h1>Security check</h1>
+    <div class="h-captcha" style="width:300px;height:78px"></div>`);
+    return;
+  }
+  if (req.url === "/captcha-solved") {
+    res.writeHead(200, { "content-type": "text/html" });
+    res.end(`<!doctype html><title>Security check</title><h1>Security check</h1>
+    <div class="h-captcha" style="width:300px;height:78px"></div>
+    <textarea name="h-captcha-response" style="display:none">solved-token</textarea>`);
+    return;
+  }
   if (req.url === "/next") {
     res.writeHead(200, { "content-type": "text/html" });
     res.end("<!doctype html><title>Next</title><h1>Next page</h1><p>Done.</p>");
@@ -153,6 +190,15 @@ try {
 
   result = await client.callTool({ name: "captcha", arguments: { action: "detect" } });
   check("captcha detect", !result.isError && parse(result).detected === false, toolText(result).slice(0, 200));
+
+  await client.callTool({ name: "navigate", arguments: { url: `${base}captcha-unsolved` } });
+  result = await client.callTool({ name: "captcha", arguments: { action: "detect" } });
+  check("captcha unsolved detected", parse(result).detected === true, toolText(result).slice(0, 200));
+
+  await client.callTool({ name: "navigate", arguments: { url: `${base}captcha-solved` } });
+  result = await client.callTool({ name: "captcha", arguments: { action: "detect" } });
+  check("captcha solved token cleared", parse(result).detected === false, toolText(result).slice(0, 200));
+  await client.callTool({ name: "navigate", arguments: { url: base } });
 
   result = await client.callTool({ name: "devtools", arguments: { action: "throttle", latency_ms: 10, download_kbps: 5000, upload_kbps: 1000 } });
   check("devtools throttle", !result.isError && parse(result).latencyMs === 10, toolText(result).slice(0, 200));

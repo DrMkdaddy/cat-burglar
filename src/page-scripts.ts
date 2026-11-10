@@ -671,9 +671,54 @@ export function detectCaptcha(): CaptchaReport {
     ['[data-arkose]', "arkose"],
     ['[class*="geetest"]', "geetest"],
   ];
+  // A widget stays in the DOM after a human solves it. Prefer the provider's
+  // response token so a solved challenge reads as clear instead of forever
+  // detected.
+  const hasToken = (provider: string): boolean => {
+    const filled = (selector: string): boolean => {
+      const el = document.querySelector(selector) as
+        | HTMLInputElement
+        | HTMLTextAreaElement
+        | null;
+      return Boolean(el && typeof el.value === "string" && el.value.trim());
+    };
+    try {
+      const w = window as any;
+      if (provider === "recaptcha") {
+        const api =
+          typeof w.grecaptcha?.getResponse === "function" && Boolean(w.grecaptcha.getResponse());
+        return (
+          api ||
+          filled('textarea[name="g-recaptcha-response"]') ||
+          filled('input[name="g-recaptcha-response"]')
+        );
+      }
+      if (provider === "hcaptcha") {
+        const api =
+          typeof w.hcaptcha?.getResponse === "function" && Boolean(w.hcaptcha.getResponse());
+        return (
+          api ||
+          filled('textarea[name="h-captcha-response"]') ||
+          filled('input[name="h-captcha-response"]')
+        );
+      }
+      if (provider === "turnstile") {
+        const api =
+          typeof w.turnstile?.getResponse === "function" && Boolean(w.turnstile.getResponse());
+        return (
+          api ||
+          filled('input[name="cf-turnstile-response"]') ||
+          filled('textarea[name="cf-turnstile-response"]')
+        );
+      }
+    } catch {
+      // Cross-origin widget APIs can throw; fall back to selector detection.
+    }
+    return false;
+  };
   for (const [selector, provider] of selectors) {
     for (const el of Array.from(document.querySelectorAll(selector))) {
-      if (visible(el)) providers.add(provider);
+      if (visible(el) && !hasToken(provider)) providers.add(provider);
     }
   }
   const text = (document.body?.innerText ?? "").slice(0, 8_000);

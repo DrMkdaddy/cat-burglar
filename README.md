@@ -56,7 +56,7 @@ From GHCR: `docker run -i --rm ghcr.io/drmkdaddy/cat-burglar:latest`.
 The installer adds a `cat-burglar` binary to your PATH. Install globally with pnpm if you prefer:
 
 ```bash
-pnpm add -g https://github.com/DrMkdaddy/cat-burglar/releases/download/v0.5.1/cat-burglar-mcp-0.5.1.tgz
+pnpm add -g https://github.com/DrMkdaddy/cat-burglar/releases/download/v0.5.2/cat-burglar-mcp-0.5.2.tgz
 cat-burglar doctor
 ```
 
@@ -372,7 +372,7 @@ The tracker list is the only copied data asset. See [`NOTICE`](NOTICE).
 
 ## Status
 
-Version 0.5.1. Benchmarked on a 12-task local suite with raw JSON in the repo. The LLM harness can run the same tasks across four servers. Issues and counterexamples are welcome.
+Version 0.5.2. Benchmarked on a 12-task local suite with raw JSON in the repo. The LLM harness can run the same tasks across four servers. Issues and counterexamples are welcome.
 
 ## License
 
