@@ -49,4 +49,5 @@ A running browser cannot switch engines. Call `open` with `restart: true`.
 - Stale ref: take a fresh snapshot, then retry.
 - Private URL blocked: pass `allow_private: true` or set `BROWSER_MCP_ALLOW_PRIVATE_NETWORK=1`.
 - No console output: Patchright disables the console API. Switch to `chromium`.
+- CAPTCHA: call `captcha` with `action=handoff`, share the local live-view URL, then `action=wait`. Do not solve it automatically.
 - Obscura lacks perf traces and web vitals. Switch to `chromium`.
