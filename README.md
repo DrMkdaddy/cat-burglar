@@ -9,7 +9,7 @@
 [![Glama](https://glama.ai/mcp/servers/DrMkdaddy/cat-burglar/badges/score.svg)](https://glama.ai/mcp/servers/DrMkdaddy/cat-burglar)
 [![Benchmark](https://img.shields.io/badge/benchmark-12%2F12%20tasks-16a34a.svg)](bench/results/latest.md)
 
-Cat Burglar plugs a real browser into your agent. It can run patched stealth Chromium, stock Chromium for devtools, or Obscura's 43 MB Rust engine behind one session. It sends diffs instead of full DOM dumps, remembers per-site workflows, and gates high-impact actions. When a CAPTCHA appears, it does not try to solve it. It hands you the live page, waits, and picks up where it stopped.
+Cat Burglar plugs a real browser into your agent. It can run patched stealth Chromium, stock Chromium for devtools, or Obscura's 43 MB Rust engine behind one session. It sends diffs instead of full DOM dumps, remembers per-site workflows, and gates high-impact actions. When a CAPTCHA appears, it opens the page in a browser window and waits for a person to finish it, then continues.
 
 ![Architecture](assets/architecture.svg)
 
@@ -23,7 +23,7 @@ Cat Burglar plugs a real browser into your agent. It can run patched stealth Chr
 | **Any residential proxy** | HTTP, HTTPS, and SOCKS5 pools with auth, sticky or rotating sessions, geo matching, and on-demand health checks. |
 | **Remote CDP and cloud** | Attach to Browserbase, Steel, Browserless, Obscura Cloud, or a local logged-in Chrome. No local browser process. |
 | **Deep DevTools on demand** | HAR, CPU profiles, heap snapshots, coverage, and network/CPU throttling, captured only while you ask. |
-| **Human CAPTCHA handoff** | The agent pauses and opens the real page in a browser window. You solve it. The agent resumes on the same session. No solver, no bypass. |
+| **Human CAPTCHA handoff** | The agent pauses, opens the page in a browser window, and waits. You finish the challenge, then it continues on the same session. |
 | **Guardrails on by default** | SSRF protection, origin lists, untrusted-content markers, tracker blocking, and a confirmation gate for destructive actions. |
 | **Works with your agent** | Claude Desktop, Claude Code, Cursor, Codex, Gemini CLI, VS Code, Windsurf, Cline, OpenCode, Docker, and any stdio client. |
 | **Measured** | A 12-task local suite with state verification. Adaptive observation cuts text by 29.9% and calls by 15% at the same success rate. |
@@ -276,7 +276,7 @@ snapshot
   [e4] button "Submit"
 ```
 
-The solve is yours. Cat Burglar never submits an answer to a challenge service and never fakes a token.
+The server has no solver integration. It polls the page until the challenge disappears.
 
 If there is no display, or the engine is Obscura, `handoff` falls back to a loopback live-view page. Force that fallback with:
 
