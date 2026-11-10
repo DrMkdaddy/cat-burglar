@@ -21,7 +21,7 @@ The installer uses pnpm when available, then npm. It installs the npm package wh
 Manual install with pnpm:
 
 ```bash
-pnpm add -g https://github.com/DrMkdaddy/cat-burglar/releases/download/v0.5.0/cat-burglar-mcp-0.5.0.tgz
+pnpm add -g https://github.com/DrMkdaddy/cat-burglar/releases/download/v0.5.1/cat-burglar-mcp-0.5.1.tgz
 cat-burglar doctor
 ```
 
@@ -227,7 +227,7 @@ cat-burglar doctor
 Expected output:
 
 ```text
-Cat Burglar 0.5.0
+Cat Burglar 0.5.1
 ok    node         v22.x
 ok    package      /path/to/package.json
 ok    chromium     /usr/bin/chromium

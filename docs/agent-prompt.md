@@ -66,7 +66,7 @@ Report the server name, tool count, engine, profile, and test page title.
 - Use `BROWSER_MCP_RISKY_ACTION_POLICY=ask` before working with payments, account deletion,
   transfers, publishing, or other high-impact actions.
 - Do not paste cookies, tokens, or passwords into prompts or commits.
-- If a CAPTCHA appears, call `captcha` with `action=handoff`, give the user the live-view URL, and wait. Do not attempt to solve it automatically.
+- If a CAPTCHA appears, call `captcha` with `action=handoff`. On a desktop this opens a real browser window on the current page; have the user solve it there, then call `action=wait`. Do not attempt to solve it automatically.
 </security>
 
 <constraints>

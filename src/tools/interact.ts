@@ -305,7 +305,7 @@ export function registerInteractionTools(
         "Detect reCAPTCHA, hCaptcha, Turnstile, DataDome, PerimeterX, Arkose, or text challenges. " +
         "Returns a screenshot and a manual handoff flag. It does not solve CAPTCHAs.",
       inputSchema: {
-        action: z.enum(["detect", "handoff", "status", "wait", "screenshot", "close_handoff"]).optional(),
+        action: z.enum(["detect", "handoff", "window", "stream", "status", "wait", "screenshot", "close_handoff"]).optional(),
         timeout_ms: z.number().int().positive().max(300_000).optional(),
         open_window: z.boolean().optional().describe("Open the local handoff URL in the default browser."),
       },
@@ -322,8 +322,35 @@ export function registerInteractionTools(
         await session.stopHandoff();
         return json({ closed: true, report });
       }
-      if (action === "handoff") {
+      if (action === "handoff" || action === "window" || action === "stream") {
         if (!report.detected) return json({ report, handoff: null });
+        if (session.hasLiveView() || session.engine === "remote") {
+          const handoff = await session.startHandoff();
+          return json({
+            report,
+            handoff,
+            requires_human: true,
+            instructions:
+              "Open the provider live view, solve the challenge, then call captcha with action=wait.",
+          });
+        }
+        if (action !== "stream" && session.canOpenWindow()) {
+          try {
+            const window = await session.openHeadedWindow();
+            return json({
+              report,
+              handoff: window,
+              requires_human: true,
+              instructions:
+                "A real browser window was opened on the current page. Solve the challenge there, then call captcha with action=wait.",
+            });
+          } catch (error) {
+            if (action === "window") throw error;
+          }
+        }
+        if (action === "window") {
+          throw new Error("no local display available for a browser window");
+        }
         const handoff = await session.startHandoff({
           openWindow: args.open_window ?? true,
           timeoutMs: args.timeout_ms,
@@ -334,7 +361,7 @@ export function registerInteractionTools(
           requires_human: true,
           instructions:
             handoff.mode === "local"
-              ? "A local solve window was opened. Solve the challenge, click Done, then call captcha with action=wait."
+              ? "A local solve page was opened. Solve the challenge, click Done, then call captcha with action=wait."
               : "Open the provider live view, solve the challenge, then call captcha with action=wait.",
         });
       }
@@ -347,7 +374,7 @@ export function registerInteractionTools(
         }
       }
       if (action === "wait" && !report.detected) {
-        await session.stopHandoff();
+        await session.finishHandoff();
       }
       if (action === "screenshot" || report.detected) {
         const shot = await session.screenshot({});
@@ -356,7 +383,7 @@ export function registerInteractionTools(
           `${JSON.stringify(report, null, 2)}
 ${
             report.detected
-              ? "Manual handoff required. Switch to headless:false or complete the challenge in the browser."
+              ? "Manual handoff required. Call captcha with action=handoff to open the page in a real browser window."
               : "No challenge detected."
           }`,
         );

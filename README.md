@@ -56,7 +56,7 @@ From GHCR: `docker run -i --rm ghcr.io/drmkdaddy/cat-burglar:latest`.
 The installer adds a `cat-burglar` binary to your PATH. Install globally with pnpm if you prefer:
 
 ```bash
-pnpm add -g https://github.com/DrMkdaddy/cat-burglar/releases/download/v0.5.0/cat-burglar-mcp-0.5.0.tgz
+pnpm add -g https://github.com/DrMkdaddy/cat-burglar/releases/download/v0.5.1/cat-burglar-mcp-0.5.1.tgz
 cat-burglar doctor
 ```
 
@@ -254,10 +254,12 @@ When a challenge appears, call:
 { "action": "handoff" }
 ```
 
-For a local browser, Cat Burglar starts a loopback-only handoff page, streams the live headless browser into it, opens it in your default browser, and forwards your clicks, typing, and scrolling back to the page. Solve the challenge, click Done, then call `captcha` with `action: "wait"`.
+On a local desktop, Cat Burglar relaunches the same profile in headed mode, navigates back to the current page, and opens a real browser window. You solve the challenge directly in that window, then call `captcha` with `action: "wait"` and the agent continues on the same session.
+
+If there is no display, or the engine is Obscura, `handoff` falls back to a loopback live-view page. Force that fallback with:
 
 ```json
-{ "action": "handoff", "open_window": false, "timeout_ms": 300000 }
+{ "action": "stream", "open_window": false, "timeout_ms": 300000 }
 ```
 
 For remote CDP providers, pass the provider live-view URL when opening:
@@ -270,7 +272,7 @@ For remote CDP providers, pass the provider live-view URL when opening:
 }
 ```
 
-`captcha handoff` returns that URL instead of starting a local page. Handoff servers are token-protected, bind to 127.0.0.1 only, and stop on Done, timeout, or `close`.
+`captcha handoff` returns that URL instead of opening a local window. Stream handoffs are token-protected, bind to 127.0.0.1 only, and stop on Done, timeout, or `close`.
 
 ## Benchmark
 
@@ -370,7 +372,7 @@ The tracker list is the only copied data asset. See [`NOTICE`](NOTICE).
 
 ## Status
 
-Version 0.5.0. Benchmarked on a 12-task local suite with raw JSON in the repo. The LLM harness can run the same tasks across four servers. Issues and counterexamples are welcome.
+Version 0.5.1. Benchmarked on a 12-task local suite with raw JSON in the repo. The LLM harness can run the same tasks across four servers. Issues and counterexamples are welcome.
 
 ## License
 

@@ -65,7 +65,7 @@ export function createServer(config: Config): BrowserServer {
   const audit = new AuditLog(config.auditPath, config.audit);
   configureAudit(audit, () => session.currentOrigin());
   const server = new McpServer(
-    { name: "catburglar", version: "0.5.0" },
+    { name: "catburglar", version: "0.5.1" },
     {
       instructions: INSTRUCTIONS,
       capabilities: { tools: {} },

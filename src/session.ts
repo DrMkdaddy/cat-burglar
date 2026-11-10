@@ -281,6 +281,7 @@ export class BrowserSession {
   private handoff?: HandoffServer;
   private handoffUrl?: string;
   private liveViewUrl?: string;
+  private windowHandoff = false;
   profileFallback?: string;
 
   constructor(config: Config) {
@@ -320,7 +321,7 @@ export class BrowserSession {
         : null,
       proxyPool: this.proxyPool.size,
       cdp: this.safeCdpUrl(),
-      handoff: this.handoffUrl ?? this.liveViewUrl ?? null,
+      handoff: this.handoffStatus(),
       tabs: this.pages.length,
       url: this.safeUrl(),
       networkEntries: this.network.length,
@@ -915,6 +916,7 @@ export class BrowserSession {
     this.currentProxyHealth = undefined;
     this.cdpUrl = undefined;
     await this.stopHandoff();
+    this.windowHandoff = false;
     this.liveViewUrl = undefined;
     this.killObscura();
     this.engine = null;
@@ -1861,6 +1863,37 @@ export class BrowserSession {
     };
   }
 
+  hasLiveView(): boolean {
+    return Boolean(this.liveViewUrl);
+  }
+
+  canOpenWindow(): boolean {
+    if (this.engine === "remote" || this.engine === "obscura") return false;
+    if (process.platform !== "linux") return true;
+    return Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY);
+  }
+
+  async openHeadedWindow(): Promise<{ mode: "window"; url: string; relaunched: boolean }> {
+    if (!this.canOpenWindow()) throw new Error("no local display available");
+    const page = await this.page();
+    const currentUrl = page.url();
+    const wasHeaded = (this.lastLaunchOptions.headless ?? this.config.headless) === false;
+    if (!wasHeaded) {
+      const options = { ...this.lastLaunchOptions, headless: false };
+      await this.launch(options);
+      if (currentUrl && currentUrl !== "about:blank") {
+        await this.navigate(currentUrl, "domcontentloaded");
+      }
+    }
+    this.windowHandoff = true;
+    return { mode: "window", url: this.safeUrl() ?? currentUrl, relaunched: !wasHeaded };
+  }
+
+  async finishHandoff(): Promise<void> {
+    this.windowHandoff = false;
+    await this.stopHandoff();
+  }
+
   async startHandoff(options: { openWindow?: boolean; timeoutMs?: number } = {}): Promise<
     | ({ mode: "remote" } & { url: string })
     | ({ mode: "local" } & HandoffInfo)
@@ -1887,8 +1920,13 @@ export class BrowserSession {
     this.handoffUrl = undefined;
   }
 
-  handoffStatus(): { active: boolean; url: string | null; mode: "remote" | "local" | null } {
+  handoffStatus(): {
+    active: boolean;
+    url: string | null;
+    mode: "remote" | "local" | "window" | null;
+  } {
     if (this.liveViewUrl) return { active: true, url: this.liveViewUrl, mode: "remote" };
+    if (this.windowHandoff) return { active: true, url: this.safeUrl() ?? null, mode: "window" };
     return { active: Boolean(this.handoff?.active), url: this.handoffUrl ?? null, mode: this.handoff ? "local" : null };
   }
 
