@@ -1,0 +1,1420 @@
+import { spawn, type ChildProcess } from "node:child_process";
+import { existsSync } from "node:fs";
+import { createServer } from "node:net";
+import { join } from "node:path";
+import type { Config, EngineKind } from "./config.js";
+import { resolveProfile, type ProfileLimits, type ProfileName } from "./profiles.js";
+import { canonicalOrigin } from "./memory.js";
+import {
+  diffControls,
+  textDelta,
+  type ControlChange,
+  type ControlDiff,
+  type SnapshotRecord,
+  type TextDelta,
+} from "./diff.js";
+import { checkUrl, installRequestGuard } from "./security.js";
+import {
+  extractReadable,
+  extractStructured,
+  installVitals as installVitalsPageScript,
+  readVitals as readVitalsPageScript,
+  resourceTimings as resourceTimingsPageScript,
+  snapshotPage,
+  stealthReport as stealthReportPageScript,
+  type ControlInfo,
+  type ExtractMode,
+  type ExtractMode as ExtractModeType,
+  type ReadableResult,
+  type SelectorField,
+  type SnapshotData,
+  type StealthReport,
+  type VitalsData,
+} from "./page-scripts.js";
+import { ensureDir, safeArtifactPath, timestamp, writeArtifact } from "./artifacts.js";
+
+export interface NetworkEntry {
+  id: number;
+  page: number;
+  method: string;
+  url: string;
+  resourceType: string;
+  status?: number;
+  statusText?: string;
+  mimeType?: string;
+  size?: number;
+  durationMs?: number;
+  failed?: string;
+  startedAt: number;
+}
+
+export interface ConsoleEntry {
+  id: number;
+  page: number;
+  type: string;
+  text: string;
+  url?: string;
+  line?: number;
+  at: number;
+}
+
+export interface TabInfo {
+  index: number;
+  active: boolean;
+  url: string;
+  title: string;
+  closed: boolean;
+}
+
+export interface OpenOptions {
+  engine?: EngineKind;
+  profile?: ProfileName;
+  headless?: boolean;
+  proxy?: string;
+  stealth?: boolean;
+  allowPrivate?: boolean;
+  viewport?: { width: number; height: number };
+  userAgent?: string;
+  locale?: string;
+  timezone?: string;
+  humanize?: boolean;
+  blockTrackers?: boolean;
+}
+
+export interface ClickOptions {
+  button?: "left" | "right" | "middle";
+  clickCount?: number;
+  humanize?: boolean;
+}
+
+export interface SnapshotDiff {
+  controls: ControlDiff;
+  text: TextDelta | null;
+}
+
+export interface SnapshotResult {
+  data: SnapshotData;
+  id: string;
+  previousId?: string;
+  diff?: SnapshotDiff;
+}
+
+export interface Observation {
+  snapshotId: string;
+  previousId?: string;
+  url: string;
+  title: string;
+  urlChanged?: boolean;
+  titleChanged?: boolean;
+  diff?: SnapshotDiff;
+  changed: boolean;
+}
+
+export interface ActionRecord {
+  tool: string;
+  arguments: Record<string, unknown>;
+  url: string;
+  at: number;
+}
+
+export interface PerfSummary {
+  artifact?: string;
+  durationMs: number;
+  longTasks: Array<{ durationMs: number; url: string }>;
+  scripts: Array<{ url: string; totalMs: number; calls: number }>;
+  counts: Record<string, number>;
+  totals: Record<string, number>;
+}
+
+const CHROMIUM_CANDIDATES = [
+  process.env.BROWSER_MCP_CHROMIUM_PATH,
+  process.env.CHROME_PATH,
+  "/usr/bin/chromium",
+  "/usr/bin/chromium-browser",
+  "/usr/bin/google-chrome",
+  "/usr/bin/google-chrome-stable",
+  "/snap/bin/chromium",
+].filter(Boolean) as string[];
+
+function firstExisting(candidates: string[]): string | undefined {
+  return candidates.find((candidate) => existsSync(candidate));
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function findFreePort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => resolve());
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    server.close();
+    throw new Error("could not allocate a port for Obscura");
+  }
+  const port = address.port;
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  return port;
+}
+
+function parseProxy(proxy: string | undefined): Record<string, string> | undefined {
+  if (!proxy) return undefined;
+  try {
+    const url = new URL(proxy);
+    const server = `${url.protocol}//${url.host}`;
+    const result: Record<string, string> = { server };
+    if (url.username) result.username = decodeURIComponent(url.username);
+    if (url.password) result.password = decodeURIComponent(url.password);
+    return result;
+  } catch {
+    return { server: proxy };
+  }
+}
+
+export function redactUrl(raw: string, redactParams: string[]): string {
+  if (redactParams.length === 0) return raw;
+  try {
+    const url = new URL(raw);
+    let changed = false;
+    for (const key of [...url.searchParams.keys()]) {
+      if (redactParams.includes(key.toLowerCase())) {
+        url.searchParams.set(key, "[redacted]");
+        changed = true;
+      }
+    }
+    return changed ? url.toString() : raw;
+  } catch {
+    return raw;
+  }
+}
+
+export class BrowserSession {
+  readonly config: Config;
+  engine: EngineKind | null = null;
+  profile: ProfileName;
+  limits: ProfileLimits;
+  allowPrivate: boolean;
+  humanize: boolean;
+  blockTrackers: boolean;
+
+  private context: any = null;
+  private browser: any = null;
+  private obscuraProcess: ChildProcess | null = null;
+  private obscuraLogs: string[] = [];
+  private pages: any[] = [];
+  private activeIndex = 0;
+  private attached = new WeakSet<object>();
+  private pageByKey = new Map<string, any>();
+  private objectKeys = new WeakMap<object, string>();
+  private nextObjectKey = 0;
+  private network: NetworkEntry[] = [];
+  private requestIds = new WeakMap<object, NetworkEntry>();
+  private consoleEntries: ConsoleEntry[] = [];
+  private entryId = 0;
+  private downloads: Array<{ path: string; url: string; at: number }> = [];
+  private traceClients = new Map<object, { client: any; startedAt: number }>();
+  private viewport: { width: number; height: number };
+  private snapshotHistory = new Map<string, SnapshotRecord[]>();
+  private snapshotSeq = 0;
+  private actionLog: ActionRecord[] = [];
+
+  constructor(config: Config) {
+    this.config = config;
+    this.profile = config.profile;
+    this.limits = resolveProfile(config.profile);
+    this.allowPrivate = config.allowPrivateNetwork;
+    this.humanize = config.humanize;
+    this.blockTrackers = config.blockTrackers;
+    this.viewport = { ...config.viewport };
+  }
+
+  get running(): boolean {
+    return Boolean(this.context);
+  }
+
+  status(): Record<string, unknown> {
+    return {
+      running: this.running,
+      engine: this.engine,
+      profile: this.profile,
+      limits: this.limits,
+      allowPrivate: this.allowPrivate,
+      humanize: this.humanize,
+      blockTrackers: this.blockTrackers,
+      viewport: this.viewport,
+      tabs: this.pages.length,
+      url: this.safeUrl(),
+      networkEntries: this.network.length,
+      consoleEntries: this.consoleEntries.length,
+      downloads: this.downloads.slice(-5),
+    };
+  }
+
+  private safeUrl(): string | undefined {
+    try {
+      return this.context ? this.activePageSync()?.url() : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Obscura sometimes emits two Page wrappers for one CDP target. Playwright's
+   * internal target guid is the stable identity, so dedupe on it and replace the
+   * old wrapper in place when a newer one arrives.
+   */
+  private pageKey(page: any): string {
+    const guid = page?._guid;
+    if (typeof guid === "string" && guid) return `guid:${guid}`;
+    let key = this.objectKeys.get(page);
+    if (!key) {
+      key = `obj:${++this.nextObjectKey}`;
+      this.objectKeys.set(page, key);
+    }
+    return key;
+  }
+
+  private registerPage(page: any): void {
+    const key = this.pageKey(page);
+    const existing = this.pageByKey.get(key);
+    if (!existing) {
+      this.pageByKey.set(key, page);
+      this.pages.push(page);
+      this.attachPage(page);
+      return;
+    }
+    if (existing !== page) {
+      const index = this.pages.indexOf(existing);
+      if (index === -1) this.pages.push(page);
+      else this.pages[index] = page;
+      this.pageByKey.set(key, page);
+      this.attachPage(page);
+    }
+  }
+
+  private unregisterPage(page: any): void {
+    const key = this.pageKey(page);
+    this.pageByKey.delete(key);
+    const index = this.pages.indexOf(page);
+    if (index !== -1) {
+      this.pages.splice(index, 1);
+      if (index < this.activeIndex) this.activeIndex -= 1;
+      if (this.activeIndex >= this.pages.length) {
+        this.activeIndex = Math.max(0, this.pages.length - 1);
+      }
+    }
+  }
+
+  private activePageSync(): any | undefined {
+    const alive = this.pages.filter((page) => !page.isClosed());
+    if (alive.length === 0) return undefined;
+    if (this.activeIndex >= alive.length) this.activeIndex = 0;
+    return alive[this.activeIndex];
+  }
+
+  async page(): Promise<any> {
+    if (!this.context) throw new Error("browser is not open; call open/navigate first");
+    const alive = this.pages.filter((page) => !page.isClosed());
+    if (alive.length === 0) {
+      const page = await this.context.newPage();
+      this.registerPage(page);
+      this.activeIndex = this.pages.indexOf(page);
+      return this.pageByKey.get(this.pageKey(page)) ?? page;
+    }
+    this.pages = alive;
+    if (this.activeIndex >= alive.length) this.activeIndex = 0;
+    return alive[this.activeIndex];
+  }
+
+  async launch(options: OpenOptions = {}): Promise<void> {
+    const engine = options.engine ?? this.config.defaultEngine;
+    if (!["patchright", "chromium", "obscura"].includes(engine)) {
+      throw new Error(`unknown engine "${engine}"`);
+    }
+    if (this.running) await this.close();
+
+    this.engine = engine;
+    this.profile = options.profile ?? this.config.profile;
+    this.limits = resolveProfile(this.profile);
+    this.snapshotHistory.clear();
+    this.actionLog = [];
+    this.allowPrivate = options.allowPrivate ?? this.config.allowPrivateNetwork;
+    this.humanize = options.humanize ?? this.config.humanize;
+    this.blockTrackers = options.blockTrackers ?? this.config.blockTrackers;
+    this.viewport = options.viewport ?? { ...this.config.viewport };
+    this.network = [];
+    this.consoleEntries = [];
+    this.entryId = 0;
+
+    if (engine === "obscura") {
+      await this.launchObscura(options);
+      return;
+    }
+
+    const chromium = await this.loadChromium(engine);
+    const executablePath = firstExisting(CHROMIUM_CANDIDATES);
+    const profileDir = join(this.config.profileDir, engine);
+    ensureDir(profileDir);
+
+    const launchOptions: Record<string, unknown> = {
+      headless: options.headless ?? this.config.headless,
+      viewport: this.viewport,
+      locale: options.locale ?? this.config.locale,
+      timezoneId: options.timezone ?? this.config.timezone,
+      userAgent: options.userAgent ?? this.config.userAgent,
+      proxy: parseProxy(options.proxy ?? this.config.proxy),
+      acceptDownloads: true,
+      ignoreHTTPSErrors: false,
+      args: [
+        "--disable-dev-shm-usage",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--force-color-profile=srgb",
+        "--disable-blink-features=AutomationControlled",
+        ...(process.env.BROWSER_MCP_NO_SANDBOX === "1" || process.getuid?.() === 0
+          ? ["--no-sandbox", "--disable-setuid-sandbox"]
+          : []),
+      ],
+    };
+    if (executablePath) launchOptions.executablePath = executablePath;
+    if (launchOptions.proxy === undefined) delete launchOptions.proxy;
+    if (launchOptions.userAgent === undefined) delete launchOptions.userAgent;
+    if (launchOptions.timezoneId === undefined) delete launchOptions.timezoneId;
+
+    this.context = await chromium.launchPersistentContext(profileDir, launchOptions);
+    this.browser = this.context.browser?.() ?? null;
+    await this.afterContextReady();
+  }
+
+  private async loadChromium(engine: "patchright" | "chromium"): Promise<any> {
+    if (engine === "patchright") {
+      const module = await import("patchright");
+      return module.chromium;
+    }
+    const module = await import("playwright-core");
+    return module.chromium;
+  }
+
+  private async launchObscura(options: OpenOptions): Promise<void> {
+    const binary = this.config.obscuraPath;
+    if (!binary || !existsSync(binary)) {
+      throw new Error(
+        "Obscura is not installed. Run `npm run install:obscura` or set BROWSER_MCP_OBSCURA_PATH.",
+      );
+    }
+
+    const port = await findFreePort();
+    const storageDir = join(this.config.profileDir, "obscura");
+    ensureDir(storageDir);
+    const args = ["serve", "--port", String(port), "--storage-dir", storageDir, "--workers", "1"];
+    if (options.stealth ?? true) args.push("--stealth");
+    if (this.allowPrivate) args.push("--allow-private-network");
+    const proxy = options.proxy ?? this.config.proxy;
+    if (proxy) args.push("--proxy", proxy);
+
+    this.obscuraLogs = [];
+    const child = spawn(binary, args, { stdio: ["ignore", "pipe", "pipe"] });
+    this.obscuraProcess = child;
+    const collect = (chunk: Buffer): void => {
+      for (const line of chunk.toString().split(/\r?\n/)) {
+        if (!line.trim()) continue;
+        this.obscuraLogs.push(line);
+        if (this.obscuraLogs.length > 60) this.obscuraLogs.shift();
+      }
+    };
+    child.stderr?.on("data", collect);
+    child.stdout?.on("data", collect);
+
+    const chromium = await this.loadChromium("chromium");
+    let connected = false;
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 120; attempt++) {
+      if (child.exitCode !== null) break;
+      try {
+        this.browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`, {
+          timeout: 1_500,
+        });
+        connected = true;
+        break;
+      } catch (error) {
+        lastError = error;
+        await sleep(125);
+      }
+    }
+    if (!connected) {
+      this.killObscura();
+      throw new Error(
+        `could not connect to Obscura on port ${port}: ${
+          (lastError as Error)?.message ?? this.obscuraLogs.slice(-10).join("\n")
+        }`,
+      );
+    }
+
+    const contexts = this.browser.contexts();
+    this.context = contexts[0] ?? (await this.browser.newContext());
+    await this.afterContextReady();
+  }
+
+  private async afterContextReady(): Promise<void> {
+    this.context.setDefaultTimeout(this.config.actionTimeoutMs);
+    await installRequestGuard(this.context, this.config, {
+      allowPrivate: this.allowPrivate,
+      blockTrackers: this.blockTrackers,
+      onBlock: (url, reason) => {
+        if (process.env.BROWSER_MCP_DEBUG) {
+          process.stderr.write(`[browser-mcp] blocked ${url}: ${reason}\n`);
+        }
+      },
+    });
+
+    this.pages = [];
+    this.pageByKey.clear();
+    this.activeIndex = 0;
+    for (const page of this.context.pages()) {
+      this.registerPage(page);
+    }
+    this.context.on("page", (page: any) => {
+      this.registerPage(page);
+      this.activeIndex = Math.max(0, this.pages.indexOf(page));
+    });
+
+    if (this.pages.length === 0) {
+      const page = await this.context.newPage();
+      this.registerPage(page);
+    }
+    this.activeIndex = 0;
+  }
+
+  private attachPage(page: any): void {
+    if (this.attached.has(page)) return;
+    this.attached.add(page);
+
+    page.on("console", (message: any) => {
+      this.pushConsole({
+        type: message.type(),
+        text: message.text(),
+        url: message.location()?.url,
+        line: message.location()?.lineNumber,
+      });
+    });
+    page.on("pageerror", (error: Error) => {
+      this.pushConsole({ type: "pageerror", text: `${error.name}: ${error.message}` });
+    });
+    page.on("request", (request: any) => this.onRequest(request));
+    page.on("response", (response: any) => this.onResponse(response));
+    page.on("requestfinished", (request: any) => void this.onRequestFinished(request));
+    page.on("requestfailed", (request: any) => this.onRequestFailed(request));
+    page.on("download", (download: any) => void this.onDownload(download));
+    page.on("close", () => {
+      const key = this.pageKey(page);
+      if (this.pageByKey.get(key) !== page) return;
+      this.unregisterPage(page);
+    });
+  }
+
+  private pushConsole(entry: Omit<ConsoleEntry, "id" | "page" | "at">): void {
+    this.consoleEntries.push({
+      ...entry,
+      id: ++this.entryId,
+      page: this.activeIndex,
+      at: Date.now(),
+    });
+    if (this.consoleEntries.length > this.config.maxConsoleEntries) {
+      this.consoleEntries.splice(0, this.consoleEntries.length - this.config.maxConsoleEntries);
+    }
+  }
+
+  private onRequest(request: any): void {
+    const entry: NetworkEntry = {
+      id: ++this.entryId,
+      page: this.activeIndex,
+      method: request.method(),
+      url: request.url(),
+      resourceType: request.resourceType(),
+      startedAt: Date.now(),
+    };
+    this.requestIds.set(request, entry);
+    this.network.push(entry);
+    if (this.network.length > this.config.maxNetworkEntries) {
+      this.network.splice(0, this.network.length - this.config.maxNetworkEntries);
+    }
+  }
+
+  private onResponse(response: any): void {
+    const entry = this.requestIds.get(response.request());
+    if (!entry) return;
+    entry.status = response.status();
+    entry.statusText = response.statusText();
+    entry.mimeType = response.headers()["content-type"];
+  }
+
+  private async onRequestFinished(request: any): Promise<void> {
+    const entry = this.requestIds.get(request);
+    if (!entry) return;
+    try {
+      const sizes = await request.sizes();
+      entry.size = sizes.responseBodySize || sizes.requestBodySize || 0;
+    } catch {
+      // ignore
+    }
+    try {
+      const timing = request.timing();
+      if (timing?.responseEnd > 0) entry.durationMs = Math.round(timing.responseEnd);
+      else entry.durationMs = Date.now() - entry.startedAt;
+    } catch {
+      entry.durationMs = Date.now() - entry.startedAt;
+    }
+  }
+
+  private onRequestFailed(request: any): void {
+    const entry = this.requestIds.get(request);
+    if (!entry) return;
+    entry.failed = request.failure()?.errorText ?? "failed";
+    entry.durationMs = Date.now() - entry.startedAt;
+  }
+
+  private async onDownload(download: any): Promise<void> {
+    try {
+      const dir = join(this.config.artifactDir, "downloads");
+      ensureDir(dir);
+      const name = `${timestamp()}-${(download.suggestedFilename() || "download").replace(/[^\w.-]+/g, "_")}`;
+      const path = join(dir, name);
+      await download.saveAs(path);
+      this.downloads.push({ path, url: download.url(), at: Date.now() });
+      if (this.downloads.length > 50) this.downloads.shift();
+    } catch {
+      // ignore download failures
+    }
+  }
+
+  async close(): Promise<void> {
+    this.traceClients.clear();
+    try {
+      await this.context?.close();
+    } catch {
+      // ignore
+    }
+    try {
+      await this.browser?.close();
+    } catch {
+      // ignore
+    }
+    this.context = null;
+    this.browser = null;
+    this.pages = [];
+    this.activeIndex = 0;
+    this.snapshotHistory.clear();
+    this.actionLog = [];
+    this.killObscura();
+    this.engine = null;
+  }
+
+  private killObscura(): void {
+    if (this.obscuraProcess) {
+      try {
+        this.obscuraProcess.kill("SIGTERM");
+      } catch {
+        // ignore
+      }
+      this.obscuraProcess = null;
+    }
+  }
+
+  async navigate(url: string, waitUntil: "load" | "domcontentloaded" | "networkidle" = "load"): Promise<{
+    url: string;
+    title: string;
+    status: number | null;
+  }> {
+    if (!this.running) await this.launch();
+    const check = await checkUrl(url, this.config, this.allowPrivate);
+    if (!check.ok) throw new Error(check.reason ?? "URL blocked");
+    const page = await this.page();
+    // An explicit navigation starts a new observation context.
+    this.snapshotHistory.delete(this.pageKey(page));
+    const response = await page.goto(url, {
+      waitUntil,
+      timeout: this.config.navigationTimeoutMs,
+    });
+    await page.waitForTimeout(this.config.settleMs);
+    return {
+      url: page.url(),
+      title: await page.title().catch(() => ""),
+      status: response?.status() ?? null,
+    };
+  }
+
+  async back(): Promise<void> {
+    const page = await this.page();
+    await page.goBack({ timeout: this.config.navigationTimeoutMs, waitUntil: "load" });
+  }
+
+  async forward(): Promise<void> {
+    const page = await this.page();
+    await page.goForward({ timeout: this.config.navigationTimeoutMs, waitUntil: "load" });
+  }
+
+  async reload(): Promise<void> {
+    const page = await this.page();
+    await page.reload({ timeout: this.config.navigationTimeoutMs, waitUntil: "load" });
+  }
+
+  currentOrigin(): string {
+    return canonicalOrigin(this.safeUrl() ?? "");
+  }
+
+  recordAction(tool: string, args: Record<string, unknown>): void {
+    const safe: Record<string, unknown> = { ...args };
+    delete safe.confirm;
+    delete safe.humanize;
+    delete safe.observe;
+    if (tool === "fill") safe.value = "<value>";
+    if (tool === "type") safe.text = "<text>";
+    if (tool === "upload") safe.paths = ["<file>"];
+    this.actionLog.push({
+      tool,
+      arguments: safe,
+      url: this.safeUrl() ?? "",
+      at: Date.now(),
+    });
+    if (this.actionLog.length > 80) this.actionLog.shift();
+  }
+
+  recentActions(origin?: string, limit = 20): ActionRecord[] {
+    const filtered = origin
+      ? this.actionLog.filter((entry) => canonicalOrigin(entry.url) === origin)
+      : this.actionLog;
+    return filtered.slice(-limit);
+  }
+
+  private historyFor(page: any): SnapshotRecord[] {
+    const key = this.pageKey(page);
+    const existing = this.snapshotHistory.get(key);
+    if (existing) return existing;
+    const created: SnapshotRecord[] = [];
+    this.snapshotHistory.set(key, created);
+    return created;
+  }
+
+  private storeSnapshot(page: any, data: SnapshotData): { record: SnapshotRecord; previous?: SnapshotRecord } {
+    const history = this.historyFor(page);
+    const previous = history[history.length - 1];
+    const record: SnapshotRecord = {
+      id: `s${++this.snapshotSeq}`,
+      controls: data.controls,
+      text: data.text,
+      url: data.url,
+      title: data.title,
+      at: Date.now(),
+    };
+    history.push(record);
+    if (history.length > 12) history.shift();
+    return { record, previous };
+  }
+
+  private diffOf(previous: SnapshotRecord | undefined, data: SnapshotData, maxChars: number): SnapshotDiff | undefined {
+    if (!previous) return undefined;
+    return {
+      controls: diffControls(previous.controls, data.controls),
+      text: textDelta(previous.text, data.text, Math.min(maxChars, 900)),
+    };
+  }
+
+  async snapshot(
+    maxChars: number,
+    maxControls: number,
+    since?: string,
+  ): Promise<SnapshotResult> {
+    const page = await this.page();
+    const data = (await page.evaluate(snapshotPage, {
+      maxControls,
+      maxText: maxChars,
+    })) as SnapshotData;
+    const history = this.historyFor(page);
+    const previous =
+      (since ? history.find((entry) => entry.id === since) : undefined) ??
+      history[history.length - 1];
+    const { record } = this.storeSnapshot(page, data);
+    return {
+      data,
+      id: record.id,
+      ...(previous ? { previousId: previous.id, diff: this.diffOf(previous, data, maxChars) } : {}),
+    };
+  }
+
+  /**
+   * Agent-E style change observation: after a mutation, return only what
+   * changed, bounded to the active profile's observation budget.
+   */
+  async observe(maxChars?: number): Promise<Observation> {
+    const page = await this.page();
+    await page
+      .waitForLoadState("domcontentloaded", { timeout: 1_500 })
+      .catch(() => undefined);
+    await page.waitForTimeout(80);
+
+    const budget = maxChars ?? this.limits.observationChars;
+    const data = (await page.evaluate(snapshotPage, {
+      maxControls: Math.min(this.limits.maxControls, 80),
+      maxText: Math.max(budget, 400),
+    })) as SnapshotData;
+    const history = this.historyFor(page);
+    const previous = history[history.length - 1];
+    const { record } = this.storeSnapshot(page, data);
+    const diff = this.diffOf(previous, data, budget);
+    return {
+      snapshotId: record.id,
+      ...(previous ? { previousId: previous.id } : {}),
+      url: data.url,
+      title: data.title,
+      ...(previous
+        ? { urlChanged: previous.url !== data.url, titleChanged: previous.title !== data.title }
+        : {}),
+      ...(diff ? { diff } : {}),
+      changed: Boolean(
+        diff &&
+          (diff.controls.added.length ||
+            diff.controls.removed.length ||
+            diff.controls.changed.length ||
+            diff.text),
+      ),
+    };
+  }
+
+  async markdown(): Promise<ReadableResult> {
+    const page = await this.page();
+    return page.evaluate(extractReadable) as Promise<ReadableResult>;
+  }
+
+  async extract(
+    mode: ExtractMode,
+    options: {
+      selector?: Record<string, string | SelectorField>;
+      limit?: number;
+    } = {},
+  ): Promise<unknown> {
+    const page = await this.page();
+    return page.evaluate(extractStructured, {
+      mode,
+      selector: options.selector,
+      limit: options.limit ?? 100,
+    });
+  }
+
+  async stealthReport(): Promise<StealthReport> {
+    const page = await this.page();
+    return page.evaluate(stealthReportPageScript) as Promise<StealthReport>;
+  }
+
+  async evaluate(expression: string): Promise<unknown> {
+    const page = await this.page();
+    // Playwright evaluates the string in the page and awaits returned promises.
+    return page.evaluate(expression);
+  }
+
+  async resolveHandle(target: {
+    ref?: string;
+    selector?: string;
+    text?: string;
+    role?: string;
+    name?: string;
+    exact?: boolean;
+  }): Promise<any> {
+    const page = await this.page();
+    if (target.ref) {
+      const handle = await page.evaluateHandle((ref: string) => {
+        const map = (window as any).__bmRefs;
+        return map?.get(ref) ?? null;
+      }, target.ref);
+      const element = handle.asElement();
+      if (!element) throw new Error(`stale or unknown ref "${target.ref}"; take a fresh snapshot`);
+      const connected = await element.evaluate((node: Element) => node.isConnected).catch(() => false);
+      if (!connected) {
+        throw new Error(`stale ref "${target.ref}" (element left the DOM); take a fresh snapshot`);
+      }
+      return element;
+    }
+    if (target.selector) {
+      const element = await page.$(target.selector);
+      if (!element) throw new Error(`no element matches selector "${target.selector}"`);
+      return element;
+    }
+    if (target.role) {
+      const locator = page.getByRole(target.role, target.name ? { name: target.name, exact: !!target.exact } : {});
+      const element = await locator.first().elementHandle();
+      if (!element) throw new Error(`no element with role "${target.role}"${target.name ? ` named "${target.name}"` : ""}`);
+      return element;
+    }
+    if (target.text) {
+      const locator = page.getByText(target.text, { exact: !!target.exact });
+      const element = await locator.first().elementHandle();
+      if (!element) throw new Error(`no element containing text "${target.text}"`);
+      return element;
+    }
+    throw new Error("provide ref, selector, text, or role/name");
+  }
+
+  async click(
+    target: { ref?: string; selector?: string; text?: string; role?: string; name?: string; exact?: boolean },
+    options: ClickOptions = {},
+  ): Promise<void> {
+    const element = await this.resolveHandle(target);
+    await element.scrollIntoViewIfNeeded().catch(() => undefined);
+    const button = options.button ?? "left";
+    const clickCount = options.clickCount ?? 1;
+    const humanize = options.humanize ?? this.humanize;
+
+    if (!humanize) {
+      await element.click({ button, clickCount });
+      return;
+    }
+
+    const page = await this.page();
+    const box = await element.boundingBox();
+    if (!box || box.width < 2 || box.height < 2) {
+      await element.click({ button, clickCount });
+      return;
+    }
+    const random = (min: number, max: number): number => min + Math.random() * (max - min);
+    const targetX = box.x + box.width * random(0.3, 0.7);
+    const targetY = box.y + box.height * random(0.3, 0.7);
+    const startX = Math.max(0, targetX + random(-140, 140));
+    const startY = Math.max(0, targetY + random(-90, 90));
+    await page.mouse.move(startX, startY);
+    const steps = Math.round(random(9, 16));
+    for (let step = 1; step <= steps; step++) {
+      const t = step / steps;
+      const eased = 1 - (1 - t) * (1 - t);
+      const x = startX + (targetX - startX) * eased + random(-1.2, 1.2);
+      const y = startY + (targetY - startY) * eased + random(-1.2, 1.2);
+      await page.mouse.move(x, y);
+      await sleep(random(2, 7));
+    }
+    await sleep(random(30, 120));
+    for (let i = 0; i < clickCount; i++) {
+      await page.mouse.down({ button });
+      await sleep(random(25, 70));
+      await page.mouse.up({ button });
+      if (i + 1 < clickCount) await sleep(random(70, 140));
+    }
+  }
+
+  async hover(target: Parameters<BrowserSession["resolveHandle"]>[0]): Promise<void> {
+    const element = await this.resolveHandle(target);
+    await element.scrollIntoViewIfNeeded().catch(() => undefined);
+    const page = await this.page();
+    const box = await element.boundingBox();
+    if (!box) {
+      await element.hover();
+      return;
+    }
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 8 });
+  }
+
+  async fill(target: Parameters<BrowserSession["resolveHandle"]>[0], value: string): Promise<void> {
+    const element = await this.resolveHandle(target);
+    await element.fill(value);
+  }
+
+  async type(
+    target: Parameters<BrowserSession["resolveHandle"]>[0],
+    text: string,
+    options: { delay?: number; clear?: boolean; submit?: boolean } = {},
+  ): Promise<void> {
+    const element = await this.resolveHandle(target);
+    await element.scrollIntoViewIfNeeded().catch(() => undefined);
+    await element.click().catch(() => undefined);
+    if (options.clear) {
+      await element.fill("");
+    }
+    const page = await this.page();
+    if (this.humanize && options.delay === undefined) {
+      for (const char of text) {
+        await page.keyboard.type(char);
+        await sleep(35 + Math.random() * 85);
+        if (Math.random() < 0.03) await sleep(150 + Math.random() * 250);
+      }
+    } else {
+      await page.keyboard.type(text, { delay: options.delay ?? 0 });
+    }
+    if (options.submit) await page.keyboard.press("Enter");
+  }
+
+  async press(key: string): Promise<void> {
+    const page = await this.page();
+    await page.keyboard.press(key);
+  }
+
+  async select(
+    target: Parameters<BrowserSession["resolveHandle"]>[0],
+    values: string[],
+  ): Promise<string[]> {
+    const element = await this.resolveHandle(target);
+    return element.selectOption(values);
+  }
+
+  async scroll(options: {
+    direction?: "up" | "down" | "left" | "right" | "top" | "bottom";
+    amount?: number;
+    ref?: string;
+    selector?: string;
+  }): Promise<{ scrollY: number; scrollHeight: number }> {
+    const page = await this.page();
+    if (options.ref || options.selector) {
+      const element = await this.resolveHandle({ ref: options.ref, selector: options.selector });
+      await element.scrollIntoViewIfNeeded();
+    } else {
+      const direction = options.direction ?? "down";
+      const amount = options.amount ?? 600;
+      if (direction === "top") await page.evaluate(() => window.scrollTo(0, 0));
+      else if (direction === "bottom")
+        await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+      else {
+        const dx = direction === "left" ? -amount : direction === "right" ? amount : 0;
+        const dy = direction === "up" ? -amount : direction === "down" ? amount : 0;
+        if (this.humanize) {
+          const steps = Math.round(Math.abs(dy) / 80) || 1;
+          for (let i = 0; i < steps; i++) {
+            await page.mouse.wheel(dx / steps, dy / steps);
+            await sleep(20 + Math.random() * 50);
+          }
+        } else {
+          await page.mouse.wheel(dx, dy);
+        }
+      }
+    }
+    await sleep(120);
+    return page.evaluate(() => ({
+      scrollY: window.scrollY,
+      scrollHeight: document.documentElement.scrollHeight,
+    }));
+  }
+
+  async upload(
+    target: Parameters<BrowserSession["resolveHandle"]>[0],
+    paths: string[],
+  ): Promise<number> {
+    const element = await this.resolveHandle(target);
+    await element.setInputFiles(paths);
+    return paths.length;
+  }
+
+  async waitFor(options: {
+    selector?: string;
+    text?: string;
+    timeout?: number;
+    state?: "attached" | "detached" | "visible" | "hidden";
+  }): Promise<void> {
+    const page = await this.page();
+    const timeout = options.timeout ?? this.config.actionTimeoutMs;
+    if (options.selector) {
+      await page.waitForSelector(options.selector, { timeout, state: options.state ?? "visible" });
+      return;
+    }
+    if (options.text) {
+      await page.getByText(options.text).first().waitFor({ timeout, state: "visible" });
+      return;
+    }
+    await page.waitForTimeout(timeout);
+  }
+
+  async screenshot(options: {
+    fullPage?: boolean;
+    path?: string;
+    selector?: string;
+  }): Promise<{ buffer: Buffer; path?: string }> {
+    const page = await this.page();
+    const target = options.selector
+      ? await this.resolveHandle({ selector: options.selector })
+      : null;
+    const buffer = target
+      ? await target.screenshot({ type: "png" })
+      : await page.screenshot({ fullPage: options.fullPage ?? false, type: "png" });
+    if (options.path) {
+      const path = safeArtifactPath(this.config.artifactDir, options.path, "screenshot", ".png");
+      writeArtifact(path, buffer);
+      return { buffer, path };
+    }
+    return { buffer };
+  }
+
+  async pdf(options: {
+    path?: string;
+    landscape?: boolean;
+    printBackground?: boolean;
+    format?: "A4" | "Letter" | "Legal" | "A3" | "A5";
+  }): Promise<{ buffer: Buffer; path: string }> {
+    const page = await this.page();
+    const buffer = await page.pdf({
+      landscape: options.landscape ?? false,
+      printBackground: options.printBackground ?? true,
+      format: options.format ?? "A4",
+    });
+    const path = safeArtifactPath(this.config.artifactDir, options.path, "page", ".pdf");
+    writeArtifact(path, buffer);
+    return { buffer, path };
+  }
+
+  async cookies(urls?: string[]): Promise<unknown[]> {
+    if (!this.context) throw new Error("browser is not open");
+    return this.context.cookies(urls);
+  }
+
+  async setCookies(cookies: Array<Record<string, unknown>>): Promise<void> {
+    if (!this.context) throw new Error("browser is not open");
+    const normalized = cookies.map((cookie) => {
+      const sameSite = String(cookie.sameSite ?? "Lax").toLowerCase();
+      const mapped =
+        sameSite === "strict"
+          ? "Strict"
+          : sameSite === "none" || sameSite === "no_restriction"
+            ? "None"
+            : "Lax";
+      return {
+        name: String(cookie.name),
+        value: String(cookie.value),
+        ...(cookie.url ? { url: String(cookie.url) } : {}),
+        ...(cookie.domain ? { domain: String(cookie.domain) } : {}),
+        path: cookie.path ? String(cookie.path) : "/",
+        expires: typeof cookie.expires === "number" ? cookie.expires : -1,
+        httpOnly: Boolean(cookie.httpOnly),
+        secure: Boolean(cookie.secure),
+        sameSite: mapped as "Strict" | "Lax" | "None",
+      };
+    });
+    await this.context.addCookies(normalized);
+  }
+
+  async clearCookies(): Promise<void> {
+    if (!this.context) throw new Error("browser is not open");
+    await this.context.clearCookies();
+  }
+
+  async exportStorage(path?: string): Promise<{ state: any; path?: string }> {
+    if (!this.context) throw new Error("browser is not open");
+    if (!path) return { state: await this.context.storageState() };
+    const target = safeArtifactPath(this.config.artifactDir, path, "storage", ".json");
+    const state = await this.context.storageState({ path: target });
+    return { state, path: target };
+  }
+
+  async importStorage(state: {
+    cookies?: Array<Record<string, unknown>>;
+    origins?: Array<{ origin: string; localStorage?: Array<{ name: string; value: string }> }>;
+  }): Promise<{ cookies: number; localStorage: number; warnings: string[] }> {
+    if (!this.context) throw new Error("browser is not open");
+    const warnings: string[] = [];
+    if (state.cookies?.length) await this.setCookies(state.cookies);
+
+    let count = 0;
+    if (state.origins?.length) {
+      const page = await this.page();
+      try {
+        const client = await this.context.newCDPSession(page);
+        await client.send("DOMStorage.enable");
+        for (const origin of state.origins) {
+          for (const item of origin.localStorage ?? []) {
+            await client.send("DOMStorage.setDOMStorageItem", {
+              storageId: { securityOrigin: origin.origin, isLocalStorage: true },
+              key: item.name,
+              value: item.value,
+            });
+            count += 1;
+          }
+        }
+      } catch (error) {
+        warnings.push(
+          `localStorage import needs a Chromium CDP session: ${(error as Error).message}`,
+        );
+      }
+    }
+    return { cookies: state.cookies?.length ?? 0, localStorage: count, warnings };
+  }
+
+  async newTab(url?: string): Promise<{ index: number; url: string }> {
+    if (!this.context) await this.launch();
+    const page = await this.context.newPage();
+    this.registerPage(page);
+    const canonical = this.pageByKey.get(this.pageKey(page)) ?? page;
+    this.activeIndex = Math.max(0, this.pages.indexOf(canonical));
+    if (url) {
+      await this.navigate(url);
+    }
+    return { index: this.activeIndex, url: canonical.url() };
+  }
+
+  async listTabs(): Promise<TabInfo[]> {
+    const alive = this.pages.filter((page) => !page.isClosed());
+    this.pages = alive;
+    return Promise.all(
+      alive.map(async (page, index) => ({
+        index,
+        active: index === this.activeIndex,
+        url: page.url(),
+        title: await page.title().catch(() => ""),
+        closed: false,
+      })),
+    );
+  }
+
+  async switchTab(index: number): Promise<void> {
+    const alive = this.pages.filter((page) => !page.isClosed());
+    if (index < 0 || index >= alive.length) {
+      throw new Error(`tab index ${index} out of range (0..${alive.length - 1})`);
+    }
+    this.pages = alive;
+    this.activeIndex = index;
+    await alive[index]!.bringToFront().catch(() => undefined);
+  }
+
+  async closeTab(index: number): Promise<void> {
+    const alive = this.pages.filter((page) => !page.isClosed());
+    if (index < 0 || index >= alive.length) {
+      throw new Error(`tab index ${index} out of range (0..${alive.length - 1})`);
+    }
+    this.pages = alive;
+    const page = alive[index]!;
+    await page.close();
+    // The close event normally unregisters the page; this covers Obscura wrappers
+    // that close without emitting it.
+    const key = this.pageKey(page);
+    if (this.pageByKey.get(key) === page) this.unregisterPage(page);
+  }
+
+  networkEntries(options: {
+    filter?: string;
+    type?: string;
+    failedOnly?: boolean;
+    limit?: number;
+    statusMin?: number;
+  }): Array<Record<string, unknown>> {
+    let entries = this.network;
+    if (options.filter) {
+      const needle = options.filter.toLowerCase();
+      entries = entries.filter((entry) => entry.url.toLowerCase().includes(needle));
+    }
+    if (options.type) {
+      const type = options.type.toLowerCase();
+      entries = entries.filter((entry) => entry.resourceType.toLowerCase() === type);
+    }
+    if (options.failedOnly) entries = entries.filter((entry) => entry.failed || (entry.status ?? 0) >= 400);
+    if (options.statusMin !== undefined) {
+      entries = entries.filter((entry) => (entry.status ?? 0) >= options.statusMin!);
+    }
+    const limit = options.limit ?? 80;
+    return entries.slice(-limit).map((entry) => ({
+      id: entry.id,
+      method: entry.method,
+      url: redactUrl(entry.url, this.config.redactParams),
+      type: entry.resourceType,
+      status: entry.status,
+      mime: entry.mimeType?.split(";")[0],
+      size: entry.size,
+      durationMs: entry.durationMs,
+      failed: entry.failed,
+    }));
+  }
+
+  networkSummary(): Record<string, unknown> {
+    const totalBytes = this.network.reduce((sum, entry) => sum + (entry.size ?? 0), 0);
+    const byType = new Map<string, { count: number; bytes: number }>();
+    for (const entry of this.network) {
+      const current = byType.get(entry.resourceType) ?? { count: 0, bytes: 0 };
+      current.count += 1;
+      current.bytes += entry.size ?? 0;
+      byType.set(entry.resourceType, current);
+    }
+    const slowest = [...this.network]
+      .filter((entry) => entry.durationMs !== undefined)
+      .sort((a, b) => (b.durationMs ?? 0) - (a.durationMs ?? 0))
+      .slice(0, 10)
+      .map((entry) => ({
+        url: redactUrl(entry.url, this.config.redactParams),
+        type: entry.resourceType,
+        durationMs: entry.durationMs,
+        size: entry.size,
+        status: entry.status,
+      }));
+    return {
+      requests: this.network.length,
+      totalBytes,
+      byType: Object.fromEntries(byType),
+      slowest,
+      failed: this.network.filter((entry) => entry.failed || (entry.status ?? 0) >= 400).length,
+    };
+  }
+
+  consoleMessages(options: { level?: string; limit?: number; filter?: string }): ConsoleEntry[] {
+    const rank: Record<string, number> = { debug: 0, log: 1, info: 2, warning: 3, error: 4, pageerror: 5 };
+    const min = rank[options.level ?? "log"] ?? 0;
+    let entries = this.consoleEntries.filter((entry) => (rank[entry.type] ?? 1) >= min);
+    if (options.filter) {
+      const needle = options.filter.toLowerCase();
+      entries = entries.filter((entry) => entry.text.toLowerCase().includes(needle));
+    }
+    return entries.slice(-(options.limit ?? 80)).map((entry) => ({
+      ...entry,
+      text: entry.text.slice(0, 2_000),
+    }));
+  }
+
+  clearNetwork(): void {
+    this.network = [];
+  }
+
+  clearConsole(): void {
+    this.consoleEntries = [];
+  }
+
+  listDownloads(): Array<{ path: string; url: string; at: number }> {
+    return [...this.downloads];
+  }
+
+  async vitals(): Promise<VitalsData> {
+    const page = await this.page();
+    let data = (await page.evaluate(readVitalsPageScript)) as VitalsData | null;
+    if (!data) {
+      await page.evaluate(installVitalsPageScript);
+      data = (await page.evaluate(readVitalsPageScript)) as VitalsData | null;
+    }
+    return (
+      data ?? {
+        lcp: 0,
+        cls: 0,
+        fcp: 0,
+        ttfb: 0,
+        longTasks: 0,
+        longTaskDuration: 0,
+        firstInput: null,
+        domContentLoaded: 0,
+        load: 0,
+      }
+    );
+  }
+
+  async resourceTimings(limit: number): Promise<Array<Record<string, unknown>>> {
+    const page = await this.page();
+    return page.evaluate(resourceTimingsPageScript, limit) as Promise<Array<Record<string, unknown>>>;
+  }
+
+  async perfMetrics(): Promise<Record<string, number>> {
+    const page = await this.page();
+    const client = await this.context.newCDPSession(page);
+    try {
+      await client.send("Performance.enable");
+      const response = await client.send("Performance.getMetrics");
+      const metrics = response?.metrics;
+      if (!Array.isArray(metrics)) {
+        throw new Error(`Performance.getMetrics returned no metrics (engine=${this.engine})`);
+      }
+      const result: Record<string, number> = {};
+      for (const metric of metrics) result[metric.name] = metric.value;
+      return result;
+    } finally {
+      await client.detach().catch(() => undefined);
+    }
+  }
+
+  async startTrace(): Promise<void> {
+    const page = await this.page();
+    if (this.traceClients.has(page)) throw new Error("a trace is already running on this tab");
+    const client = await this.context.newCDPSession(page);
+    await client.send("Tracing.start", {
+      categories: [
+        "devtools.timeline",
+        "v8.execute",
+        "blink.user_timing",
+        "loading",
+        "disabled-by-default-devtools.timeline",
+      ].join(","),
+      transferMode: "ReturnAsStream",
+    });
+    this.traceClients.set(page, { client, startedAt: Date.now() });
+  }
+
+  async stopTrace(): Promise<PerfSummary> {
+    const page = await this.page();
+    const active = this.traceClients.get(page);
+    if (!active) throw new Error("no trace is running; call perf with action=start first");
+    this.traceClients.delete(page);
+    const { client, startedAt } = active;
+
+    const complete = new Promise<any>((resolve) =>
+      client.once("Tracing.tracingComplete", (event: any) => resolve(event)),
+    );
+    await client.send("Tracing.end");
+    const event = await complete;
+    const chunks: Buffer[] = [];
+    if (event.stream) {
+      for (;;) {
+        const chunk = await client.send("IO.read", { handle: event.stream });
+        chunks.push(
+          chunk.base64Encoded ? Buffer.from(chunk.data, "base64") : Buffer.from(chunk.data),
+        );
+        if (chunk.eof) break;
+      }
+      await client.send("IO.close", { handle: event.stream }).catch(() => undefined);
+    }
+    await client.detach().catch(() => undefined);
+
+    const raw = Buffer.concat(chunks);
+    const path = safeArtifactPath(this.config.artifactDir, undefined, "trace", ".json");
+    writeArtifact(path, raw);
+
+    let events: any[] = [];
+    try {
+      events = JSON.parse(raw.toString("utf8")).traceEvents ?? [];
+    } catch {
+      // leave empty
+    }
+
+    const longTasks = events
+      .filter((entry) => entry.name === "RunTask" && (entry.dur ?? 0) > 50_000)
+      .map((entry) => ({
+        durationMs: Math.round((entry.dur ?? 0) / 1000),
+        url: entry.args?.data?.url ?? "",
+      }))
+      .sort((a, b) => b.durationMs - a.durationMs)
+      .slice(0, 10);
+
+    const scripts = new Map<string, { totalUs: number; calls: number }>();
+    for (const entry of events) {
+      if (!["FunctionCall", "EvaluateScript", "v8.compile"].includes(entry.name)) continue;
+      const url = entry.args?.data?.url ?? entry.args?.data?.beginData?.url ?? "(inline)";
+      const current = scripts.get(url) ?? { totalUs: 0, calls: 0 };
+      current.totalUs += entry.dur ?? 0;
+      current.calls += 1;
+      scripts.set(url, current);
+    }
+
+    const counts: Record<string, number> = {};
+    const totals: Record<string, number> = {};
+    for (const entry of events) {
+      if (!["Layout", "UpdateLayoutTree", "Paint", "RunTask", "FunctionCall", "EvaluateScript"].includes(entry.name)) {
+        continue;
+      }
+      counts[entry.name] = (counts[entry.name] ?? 0) + 1;
+      totals[entry.name] = (totals[entry.name] ?? 0) + Math.round((entry.dur ?? 0) / 1000);
+    }
+
+    return {
+      artifact: path,
+      durationMs: Date.now() - startedAt,
+      longTasks,
+      scripts: [...scripts.entries()]
+        .map(([url, value]) => ({
+          url,
+          totalMs: Math.round(value.totalUs / 1000),
+          calls: value.calls,
+        }))
+        .sort((a, b) => b.totalMs - a.totalMs)
+        .slice(0, 10),
+      counts,
+      totals,
+    };
+  }
+}
+
+export type { ExtractModeType };

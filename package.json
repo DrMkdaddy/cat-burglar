@@ -1,0 +1,80 @@
+{
+  "name": "cat-burglar-mcp",
+  "version": "0.3.3",
+  "description": "A stealth browser MCP for agents: three engines, diff observations, site memory, and a benchmark harness.",
+  "type": "module",
+  "bin": {
+    "cat-burglar": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "dev": "node --watch --experimental-strip-types src/index.ts",
+    "test": "tsc -p tsconfig.json && node --test test/*.test.mjs",
+    "smoke": "tsc -p tsconfig.json && node scripts/smoke.mjs",
+    "install:obscura": "bash scripts/install-obscura.sh",
+    "bench": "tsc -p tsconfig.json && node bench/run.mjs",
+    "bench:llm": "tsc -p tsconfig.json && node bench/run.mjs --llm",
+    "bench:compare": "tsc -p tsconfig.json && node bench/compare-servers.mjs",
+    "prepack": "tsc -p tsconfig.json",
+    "prepublishOnly": "tsc -p tsconfig.json && node --test test/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "patchright": "^1.64.3",
+    "playwright-core": "^1.65.0",
+    "turndown": "^7.2.2",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.0",
+    "@types/turndown": "^5.0.6",
+    "typescript": "^5.9.3"
+  },
+  "license": "MIT",
+  "mcpName": "io.github.DrMkdaddy/cat-burglar",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "browser",
+    "browser-automation",
+    "web-agent",
+    "ai-agent",
+    "stealth",
+    "playwright",
+    "patchright",
+    "obscura",
+    "opencode",
+    "web-scraping"
+  ],
+  "homepage": "https://github.com/DrMkdaddy/cat-burglar#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DrMkdaddy/cat-burglar.git"
+  },
+  "bugs": {
+    "url": "https://github.com/DrMkdaddy/cat-burglar/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "NOTICE",
+    "cat-burglar.config.example.json",
+    "assets",
+    "docs/install.md",
+    "docs/research",
+    "server.json",
+    "llms.txt",
+    "skills",
+    "docs/agent-prompt.md"
+  ],
+  "packageManager": "pnpm@12.17.0"
+}

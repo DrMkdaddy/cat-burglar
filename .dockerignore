@@ -1,0 +1,8 @@
+node_modules
+dist
+.git
+.github
+bench/results
+.playwright-mcp
+*.log
+cat-burglar-mcp-*.tgz

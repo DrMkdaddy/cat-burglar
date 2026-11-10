@@ -1,0 +1,43 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.DrMkdaddy/cat-burglar",
+  "title": "Cat Burglar",
+  "description": "Stealth browser MCP with three engines, diff observations, site memory, and benchmarks.",
+  "repository": {
+    "url": "https://github.com/DrMkdaddy/cat-burglar",
+    "source": "github"
+  },
+  "version": "0.3.3",
+  "packages": [
+    {
+      "registryType": "oci",
+      "identifier": "ghcr.io/drmkdaddy/cat-burglar:v0.3.3",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "BROWSER_MCP_ALLOW_PRIVATE_NETWORK",
+          "description": "Set to 1 to allow localhost and private-network pages.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "BROWSER_MCP_OBSCURA_PATH",
+          "description": "Path to the Obscura binary when it is not on PATH.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "BROWSER_MCP_PROFILE",
+          "description": "Observation profile: local, flash, frontier, or auto.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        }
+      ]
+    }
+  ]
+}

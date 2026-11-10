@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="380" viewBox="0 0 1000 380" role="img" aria-label="Cat Burglar benchmark: adaptive observation cuts text and calls">
+  <title>Cat Burglar benchmark: adaptive observation cuts text and calls</title>
+  <rect width="1000" height="380" rx="18" fill="#ffffff" stroke="#e5e7eb" stroke-width="2"/>
+  
+  <text x="40" y="52" font-family="Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif" font-size="26" font-weight="700" fill="#111827">Adaptive observation pays</text>
+  <text x="40" y="80" font-family="Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif" font-size="14" fill="#6b7280">12 deterministic tasks. Same 12/12 success in both modes. Lower is better.</text>
+
+  <rect x="40" y="108" width="430" height="210" rx="12" fill="#f9fafb" stroke="#e5e7eb"/>
+  <text x="64" y="140" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="15" font-weight="600" fill="#111827">Observation characters</text>
+  <text x="64" y="162" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="13" fill="#6b7280">Text returned by MCP tools across the suite</text>
+  <line x1="64" y1="286" x2="446" y2="286" stroke="#d1d5db" stroke-width="2"/>
+  <rect x="96" y="166" width="90" height="120" rx="6" fill="#94a3b8"/>
+  <text x="141" y="274" text-anchor="middle" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="18" font-weight="700" fill="#ffffff">30,029</text>
+  <text x="141" y="306" text-anchor="middle" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="13" fill="#6b7280">full</text>
+  <rect x="296" y="202" width="90" height="84" rx="6" fill="#16a34a"/>
+  <text x="341" y="274" text-anchor="middle" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="18" font-weight="700" fill="#ffffff">21,057</text>
+  <text x="341" y="306" text-anchor="middle" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="13" fill="#166534">adaptive</text>
+  <rect x="296" y="120" width="152" height="26" rx="13" fill="#dcfce7"/>
+  <text x="372" y="138" text-anchor="middle" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="13" font-weight="700" fill="#166534">29.9% less text</text>
+
+  <rect x="530" y="108" width="430" height="210" rx="12" fill="#f9fafb" stroke="#e5e7eb"/>
+  <text x="554" y="140" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="15" font-weight="600" fill="#111827">Tool calls</text>
+  <text x="554" y="162" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="13" fill="#6b7280">Fewer round trips per task</text>
+  <line x1="554" y1="286" x2="936" y2="286" stroke="#d1d5db" stroke-width="2"/>
+  <rect x="586" y="166" width="90" height="120" rx="6" fill="#94a3b8"/>
+  <text x="631" y="274" text-anchor="middle" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="18" font-weight="700" fill="#ffffff">80</text>
+  <text x="631" y="306" text-anchor="middle" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="13" fill="#6b7280">full</text>
+  <rect x="786" y="184" width="90" height="102" rx="6" fill="#16a34a"/>
+  <text x="831" y="274" text-anchor="middle" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="18" font-weight="700" fill="#ffffff">68</text>
+  <text x="831" y="306" text-anchor="middle" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="13" fill="#166534">adaptive</text>
+  <rect x="786" y="120" width="146" height="26" rx="13" fill="#dcfce7"/>
+  <text x="859" y="138" text-anchor="middle" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="13" font-weight="700" fill="#166534">15% fewer calls</text>
+
+  <text x="40" y="352" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="12" fill="#6b7280">Profile flash, engine Chromium, Node 26, one run. Raw data: bench/results/2026-11-09-flash.json</text>
+  
+</svg>

@@ -1,0 +1,31 @@
+{
+  "defaultEngine": "patchright",
+  "headless": true,
+  "allowPrivateNetwork": false,
+  "allowFileUrls": false,
+  "humanize": true,
+  "blockTrackers": true,
+  "locale": "en-US",
+  "viewport": {
+    "width": 1440,
+    "height": 900
+  },
+  "timeout": {
+    "navigationMs": 45000,
+    "actionMs": 10000,
+    "settleMs": 400
+  },
+  "redactParams": [
+    "token",
+    "access_token",
+    "api_key",
+    "apikey",
+    "password",
+    "secret",
+    "code"
+  ],
+  "trackerAllowlist": [],
+  "profile": "flash",
+  "riskyActionPolicy": "warn",
+  "memoryPath": "~/.cache/browser-mcp/site-memory.json"
+}

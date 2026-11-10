@@ -1,0 +1,16 @@
+NOTICE
+
+The tracker blocklist in src/data/tracker-domains.ts is derived from Obscura's
+crates/obscura-net/src/pgl_domains.txt, plus a small hand-curated set of
+analytics hosts.
+
+Obscura
+Copyright the Obscura contributors
+Licensed under the Apache License, Version 2.0
+https://github.com/h4ckf0r0day/obscura
+
+This project also builds on and reimplements interface ideas from:
+- Microsoft Playwright MCP (Apache-2.0)
+- Chrome DevTools MCP (Apache-2.0)
+- Patchright (Apache-2.0)
+- browser-use (MIT)
