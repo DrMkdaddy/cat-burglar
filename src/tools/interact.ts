@@ -305,8 +305,9 @@ export function registerInteractionTools(
         "Detect reCAPTCHA, hCaptcha, Turnstile, DataDome, PerimeterX, Arkose, or text challenges. " +
         "Returns a screenshot and a manual handoff flag. It does not solve CAPTCHAs.",
       inputSchema: {
-        action: z.enum(["detect", "wait", "screenshot"]).optional(),
+        action: z.enum(["detect", "handoff", "status", "wait", "screenshot", "close_handoff"]).optional(),
         timeout_ms: z.number().int().positive().max(300_000).optional(),
+        open_window: z.boolean().optional().describe("Open the local handoff URL in the default browser."),
       },
       annotations: { readOnlyHint: true },
     },
@@ -314,6 +315,29 @@ export function registerInteractionTools(
       const page = await session.page();
       const action = args.action ?? "detect";
       let report = await page.evaluate(detectCaptcha);
+      if (action === "status") {
+        return json({ report, handoff: session.handoffStatus() });
+      }
+      if (action === "close_handoff") {
+        await session.stopHandoff();
+        return json({ closed: true, report });
+      }
+      if (action === "handoff") {
+        if (!report.detected) return json({ report, handoff: null });
+        const handoff = await session.startHandoff({
+          openWindow: args.open_window ?? true,
+          timeoutMs: args.timeout_ms,
+        });
+        return json({
+          report,
+          handoff,
+          requires_human: true,
+          instructions:
+            handoff.mode === "local"
+              ? "A local solve window was opened. Solve the challenge, click Done, then call captcha with action=wait."
+              : "Open the provider live view, solve the challenge, then call captcha with action=wait.",
+        });
+      }
       if (action === "wait") {
         const started = Date.now();
         const timeout = args.timeout_ms ?? 60_000;
@@ -321,6 +345,9 @@ export function registerInteractionTools(
           await sleep(1_000);
           report = await page.evaluate(detectCaptcha);
         }
+      }
+      if (action === "wait" && !report.detected) {
+        await session.stopHandoff();
       }
       if (action === "screenshot" || report.detected) {
         const shot = await session.screenshot({});

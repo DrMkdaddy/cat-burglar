@@ -287,6 +287,32 @@ document.getElementById('rerender').addEventListener('click', function () {
       send(res, 200, page("Long page", `<h1>Long page</h1><ul id="long-list">${links}</ul>`));
       return;
     }
+    if (path === "/captcha") {
+      send(
+        res,
+        200,
+        page(
+          "Security check",
+          `<h1>Security check</h1>
+<div id="challenge" class="h-captcha">
+  <label><input id="human" type="checkbox"> I am human</label>
+</div>
+<button id="verify" type="button">Verify</button>
+<p id="captcha-status">Checking your browser</p>
+<script>
+document.getElementById('verify').addEventListener('click', function () {
+  if (document.getElementById('human').checked) {
+    document.getElementById('challenge').remove();
+    document.getElementById('captcha-status').textContent = 'Verified';
+  } else {
+    document.getElementById('captcha-status').textContent = 'Check the box first';
+  }
+});
+</script>`,
+        ),
+      );
+      return;
+    }
     if (path === "/heavy") {
       const links = Array.from({ length: 300 }, (_, index) => `<li><a href="/heavy?i=${index}">Archive item ${index + 1}</a></li>`).join("");
       send(

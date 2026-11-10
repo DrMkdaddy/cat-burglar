@@ -50,6 +50,8 @@ export function registerLifecycleTools(
         engine: engineEnum.optional(),
         cdp_url: z.string().optional().describe("Remote CDP endpoint (Browserbase, Steel, Browserless, local Chrome)."),
         cdp_headers: z.record(z.string(), z.string()).optional().describe("Headers for the CDP connection."),
+        live_view_url: z.string().optional().describe("Provider live view URL returned when a CAPTCHA appears."),
+        captcha_open_window: z.boolean().optional().describe("Open the local solve window automatically on handoff."),
         proxy_id: z.string().optional().describe("Select a proxy from the configured pool."),
         proxy_test: z.boolean().optional().describe("Test the selected proxy before launching."),
         match_geo: z.boolean().optional().describe("Use proxy timezone/locale for the browser context."),
@@ -86,6 +88,8 @@ export function registerLifecycleTools(
         engine: args.engine,
         cdpUrl: args.cdp_url,
         cdpHeaders: args.cdp_headers,
+        liveViewUrl: args.live_view_url,
+        captchaOpenWindow: args.captcha_open_window,
         proxyId: args.proxy_id,
         proxyTest: args.proxy_test,
         matchGeo: args.match_geo,
@@ -176,6 +180,12 @@ export function registerLifecycleTools(
         engine: session.engine,
         profile: session.profile,
         ...siteMemoryView(memory, canonicalOrigin(args.url), session.limits.hintLimit),
+        ...(result.captcha?.detected
+          ? {
+              captchaHint:
+                "A challenge was detected. Call captcha with action=handoff to open a local solve window.",
+            }
+          : {}),
         hint: "Call snapshot for refs, markdown for readable text, or extract for structured data.",
       });
     },

@@ -7,11 +7,11 @@
     "url": "https://github.com/DrMkdaddy/cat-burglar",
     "source": "github"
   },
-  "version": "0.4.0",
+  "version": "0.5.0",
   "packages": [
     {
       "registryType": "oci",
-      "identifier": "ghcr.io/drmkdaddy/cat-burglar:v0.4.0",
+      "identifier": "ghcr.io/drmkdaddy/cat-burglar:v0.5.0",
       "transport": {
         "type": "stdio"
       },

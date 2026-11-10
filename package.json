@@ -1,6 +1,6 @@
 {
   "name": "cat-burglar-mcp",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "A stealth browser MCP for agents: three engines, residential proxies, remote CDP, DevTools, site memory, and benchmarks.",
   "type": "module",
   "bin": {

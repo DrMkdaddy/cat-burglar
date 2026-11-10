@@ -29,7 +29,9 @@ import {
   readVitals as readVitalsPageScript,
   resourceTimings as resourceTimingsPageScript,
   snapshotPage,
+  detectCaptcha,
   stealthReport as stealthReportPageScript,
+  type CaptchaReport,
   type ControlInfo,
   type ExtractMode,
   type ExtractMode as ExtractModeType,
@@ -40,6 +42,7 @@ import {
   type VitalsData,
 } from "./page-scripts.js";
 import { ensureDir, safeArtifactPath, timestamp, writeArtifact } from "./artifacts.js";
+import { HandoffServer, type HandoffInfo } from "./handoff.js";
 
 export interface NetworkEntry {
   id: number;
@@ -85,6 +88,8 @@ export interface OpenOptions {
   cdpUrl?: string;
   cdpHeaders?: Record<string, string>;
   cdpTimeout?: number;
+  liveViewUrl?: string;
+  captchaOpenWindow?: boolean;
   stealth?: boolean;
   allowPrivate?: boolean;
   viewport?: { width: number; height: number };
@@ -273,6 +278,10 @@ export class BrowserSession {
   private cpuSessions = new Map<object, { client: any; startedAt: number }>();
   private coverageSessions = new Map<object, { client: any; startedAt: number }>();
   private idleTimer: NodeJS.Timeout | null = null;
+  private handoff?: HandoffServer;
+  private handoffUrl?: string;
+  private liveViewUrl?: string;
+  profileFallback?: string;
 
   constructor(config: Config) {
     this.config = config;
@@ -294,6 +303,7 @@ export class BrowserSession {
       running: this.running,
       engine: this.engine,
       profile: this.profile,
+      profileFallback: this.profileFallback ?? null,
       limits: this.limits,
       allowPrivate: this.allowPrivate,
       humanize: this.humanize,
@@ -310,6 +320,7 @@ export class BrowserSession {
         : null,
       proxyPool: this.proxyPool.size,
       cdp: this.safeCdpUrl(),
+      handoff: this.handoffUrl ?? this.liveViewUrl ?? null,
       tabs: this.pages.length,
       url: this.safeUrl(),
       networkEntries: this.network.length,
@@ -426,6 +437,7 @@ export class BrowserSession {
     }
     if (this.running) await this.close();
     this.lastLaunchOptions = { ...options };
+    this.liveViewUrl = options.liveViewUrl;
 
     this.engine = engine;
     this.profile = options.profile ?? this.config.profile;
@@ -531,7 +543,7 @@ export class BrowserSession {
     if (launchOptions.userAgent === undefined) delete launchOptions.userAgent;
     if (launchOptions.timezoneId === undefined) delete launchOptions.timezoneId;
 
-    this.context = await chromium.launchPersistentContext(profileDir, launchOptions);
+    this.context = await this.launchContext(chromium, profileDir, launchOptions);
     this.browser = this.context.browser?.() ?? null;
     await this.afterContextReady();
   }
@@ -543,6 +555,29 @@ export class BrowserSession {
     }
     const module = await import("playwright-core");
     return module.chromium;
+  }
+
+  private async launchContext(
+    chromium: any,
+    profileDir: string,
+    launchOptions: Record<string, unknown>,
+  ): Promise<any> {
+    try {
+      this.profileFallback = undefined;
+      return await chromium.launchPersistentContext(profileDir, launchOptions);
+    } catch (error) {
+      const message = (error as Error).message ?? "";
+      if (!/ProcessSingleton|profile.*(?:in use|already)|SingletonLock/i.test(message)) throw error;
+      const fallback = join(this.config.profileDir, `${this.engine ?? "browser"}-${process.pid}`);
+      ensureDir(fallback);
+      this.profileFallback = fallback;
+      if (process.env.BROWSER_MCP_DEBUG) {
+        process.stderr.write(
+          `[cat-burglar] profile busy, using isolated profile ${fallback}\n`,
+        );
+      }
+      return chromium.launchPersistentContext(fallback, launchOptions);
+    }
   }
 
   private async launchObscura(options: OpenOptions): Promise<void> {
@@ -676,6 +711,7 @@ export class BrowserSession {
       snapshotTabs: this.snapshotHistory.size,
       engine: this.engine,
       profile: this.profile,
+      profileFallback: this.profileFallback ?? null,
       limits: this.limits,
     };
   }
@@ -878,6 +914,8 @@ export class BrowserSession {
     this.currentProxy = undefined;
     this.currentProxyHealth = undefined;
     this.cdpUrl = undefined;
+    await this.stopHandoff();
+    this.liveViewUrl = undefined;
     this.killObscura();
     this.engine = null;
   }
@@ -897,6 +935,7 @@ export class BrowserSession {
     url: string;
     title: string;
     status: number | null;
+    captcha?: CaptchaReport;
   }> {
     if (!this.running) await this.launch();
     const check = await checkUrl(url, this.config, this.allowPrivate);
@@ -909,10 +948,12 @@ export class BrowserSession {
       timeout: this.config.navigationTimeoutMs,
     });
     await page.waitForTimeout(this.config.settleMs);
+    const captcha = (await page.evaluate(detectCaptcha).catch(() => null)) as CaptchaReport | null;
     return {
       url: page.url(),
       title: await page.title().catch(() => ""),
       status: response?.status() ?? null,
+      ...(captcha?.detected ? { captcha } : {}),
     };
   }
 
@@ -1818,6 +1859,37 @@ export class BrowserSession {
       uploadKbps: options.uploadKbps ?? null,
       cpuRate: options.cpuRate ?? 1,
     };
+  }
+
+  async startHandoff(options: { openWindow?: boolean; timeoutMs?: number } = {}): Promise<
+    | ({ mode: "remote" } & { url: string })
+    | ({ mode: "local" } & HandoffInfo)
+  > {
+    if (this.liveViewUrl) {
+      return { mode: "remote", url: this.liveViewUrl };
+    }
+    if (!this.handoff) {
+      this.handoff = new HandoffServer(() => this.page(), {
+        openWindow: options.openWindow ?? this.lastLaunchOptions.captchaOpenWindow ?? true,
+        timeoutMs: options.timeoutMs ?? 5 * 60_000,
+      });
+    }
+    const info = await this.handoff.start();
+    this.handoffUrl = info.url;
+    return { mode: "local", ...info };
+  }
+
+  async stopHandoff(): Promise<void> {
+    if (this.handoff) {
+      await this.handoff.stop();
+      this.handoff = undefined;
+    }
+    this.handoffUrl = undefined;
+  }
+
+  handoffStatus(): { active: boolean; url: string | null; mode: "remote" | "local" | null } {
+    if (this.liveViewUrl) return { active: true, url: this.liveViewUrl, mode: "remote" };
+    return { active: Boolean(this.handoff?.active), url: this.handoffUrl ?? null, mode: this.handoff ? "local" : null };
   }
 
   addProxy(entry: ProxyEntry): void {
