@@ -639,6 +639,60 @@ export function stealthReport(): StealthReport {
   };
 }
 
+export interface CaptchaReport {
+  detected: boolean;
+  providers: string[];
+  url: string;
+  title: string;
+  requiresHuman: boolean;
+}
+
+export function detectCaptcha(): CaptchaReport {
+  const providers = new Set<string>();
+  const visible = (el: Element): boolean => {
+    const style = getComputedStyle(el);
+    if (style.display === "none" || style.visibility === "hidden") return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  };
+  const selectors: Array<[string, string]> = [
+    ['iframe[src*="recaptcha"]', "recaptcha"],
+    ['[class*="g-recaptcha"]', "recaptcha"],
+    ['iframe[src*="hcaptcha"]', "hcaptcha"],
+    ['[class*="h-captcha"]', "hcaptcha"],
+    ['iframe[src*="challenges.cloudflare.com"]', "turnstile"],
+    ['[class*="cf-turnstile"]', "turnstile"],
+    ['[data-turnstile-sitekey]', "turnstile"],
+    ['iframe[src*="captcha-delivery.com"]', "datadome"],
+    ['[class*="datadome"]', "datadome"],
+    ['#px-captcha', "perimeterx"],
+    ['[class*="perimeterx"]', "perimeterx"],
+    ['iframe[src*="arkose"]', "arkose"],
+    ['[data-arkose]', "arkose"],
+    ['[class*="geetest"]', "geetest"],
+  ];
+  for (const [selector, provider] of selectors) {
+    for (const el of Array.from(document.querySelectorAll(selector))) {
+      if (visible(el)) providers.add(provider);
+    }
+  }
+  const text = (document.body?.innerText ?? "").slice(0, 8_000);
+  if (/verify (?:that )?you are (?:a )?human|are you a robot|complete the captcha|checking your browser/i.test(text)) {
+    providers.add("text-challenge");
+  }
+  if (/just a moment|attention required|verify you are human/i.test(document.title)) {
+    providers.add("cloudflare");
+  }
+  const result = [...providers];
+  return {
+    detected: result.length > 0,
+    providers: result,
+    url: location.href,
+    title: document.title,
+    requiresHuman: result.length > 0,
+  };
+}
+
 export interface VitalsData {
   lcp: number;
   cls: number;

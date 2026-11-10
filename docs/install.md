@@ -21,7 +21,7 @@ The installer uses pnpm when available, then npm. It installs the npm package wh
 Manual install with pnpm:
 
 ```bash
-pnpm add -g https://github.com/DrMkdaddy/cat-burglar/releases/download/v0.3.3/cat-burglar-mcp-0.3.3.tgz
+pnpm add -g https://github.com/DrMkdaddy/cat-burglar/releases/download/v0.4.0/cat-burglar-mcp-0.4.0.tgz
 cat-burglar doctor
 ```
 
@@ -185,11 +185,11 @@ The image carries Chromium. Add `--slim` after `cat-burglar` in the args if your
 
 ## Slim mode
 
-`--slim` exposes 14 tools instead of 30:
+`--slim` exposes 14 tools instead of 35:
 
 `open`, `close`, `navigate`, `status`, `snapshot`, `markdown`, `extract`, `evaluate`, `screenshot`, `click`, `fill`, `press`, `select`, `wait`.
 
-Use it in clients that load every tool schema into context. The full set adds tabs, storage, cookies, network, console, perf, stealth, memory, PDF, scrolling, hover, and upload.
+Use it in clients that load every tool schema into context. The full set adds tabs, storage, cookies, proxy pools, network, console, perf, devtools, audit, stealth, memory, CAPTCHA, PDF, scrolling, hover, and upload.
 
 ```bash
 cat-burglar --slim
@@ -199,10 +199,19 @@ cat-burglar --slim
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `BROWSER_MCP_ENGINE` | `patchright` | `patchright`, `chromium`, or `obscura` |
+| `BROWSER_MCP_ENGINE` | `patchright` | `patchright`, `chromium`, `obscura`, or `remote` |
 | `BROWSER_MCP_PROFILE` | `flash` | `local`, `flash`, `frontier`, or `auto` |
 | `BROWSER_MCP_ALLOW_PRIVATE_NETWORK` | `false` | Allow localhost and LAN |
 | `BROWSER_MCP_OBSCURA_PATH` | auto | Path to the Obscura binary |
+| `BROWSER_MCP_PROXY_POOL` | empty | JSON array or newline-separated proxy URLs |
+| `BROWSER_MCP_PROXY_MODE` | `round-robin` | `round-robin`, `random`, or `sticky` |
+| `BROWSER_MCP_PROXY_TEST` | `false` | Set to `1` to test the selected proxy on launch |
+| `BROWSER_MCP_PROXY_MATCH_GEO` | `true` | Set to `0` to stop timezone/locale matching |
+| `BROWSER_MCP_CDP_URL` | empty | Remote CDP endpoint for `remote` engine |
+| `BROWSER_MCP_CDP_HEADERS` | empty | JSON headers for the CDP connection |
+| `BROWSER_MCP_AUDIT` | `true` | Set to `0` to disable the local audit log |
+| `BROWSER_MCP_AUDIT_PATH` | `~/.cache/browser-mcp/audit.jsonl` | Audit log location |
+| `BROWSER_MCP_IDLE_TIMEOUT_MS` | `0` | Close the browser after inactivity |
 | `BROWSER_MCP_CHROMIUM_PATH` | auto | Path to Chromium or Chrome |
 | `BROWSER_MCP_TOOLSET` | `full` | Set to `slim` for 14 tools |
 | `BROWSER_MCP_RISKY_ACTION_POLICY` | `warn` | `off`, `warn`, or `ask` |
@@ -218,7 +227,7 @@ cat-burglar doctor
 Expected output:
 
 ```text
-Cat Burglar 0.3.3
+Cat Burglar 0.4.0
 ok    node         v22.x
 ok    package      /path/to/package.json
 ok    chromium     /usr/bin/chromium

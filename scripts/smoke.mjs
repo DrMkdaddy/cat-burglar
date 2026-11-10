@@ -145,6 +145,39 @@ try {
   result = await client.callTool({ name: "perf", arguments: { action: "vitals" } });
   check("perf vitals", !result.isError && typeof parse(result).fcp === "number", toolText(result));
 
+  result = await client.callTool({ name: "resources", arguments: {} });
+  check("resources", !result.isError && parse(result).pages >= 1, toolText(result).slice(0, 200));
+
+  result = await client.callTool({ name: "proxy", arguments: { action: "list" } });
+  check("proxy list", !result.isError && Array.isArray(parse(result).pool), toolText(result).slice(0, 200));
+
+  result = await client.callTool({ name: "captcha", arguments: { action: "detect" } });
+  check("captcha detect", !result.isError && parse(result).detected === false, toolText(result).slice(0, 200));
+
+  result = await client.callTool({ name: "devtools", arguments: { action: "throttle", latency_ms: 10, download_kbps: 5000, upload_kbps: 1000 } });
+  check("devtools throttle", !result.isError && parse(result).latencyMs === 10, toolText(result).slice(0, 200));
+
+  result = await client.callTool({ name: "devtools", arguments: { action: "coverage_start" } });
+  check("coverage start", !result.isError, toolText(result));
+  result = await client.callTool({ name: "devtools", arguments: { action: "coverage_stop" } });
+  check("coverage stop", !result.isError && Array.isArray(parse(result).coverage), toolText(result).slice(0, 200));
+
+  result = await client.callTool({ name: "devtools", arguments: { action: "cpu_start" } });
+  check("cpu start", !result.isError, toolText(result));
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  result = await client.callTool({ name: "devtools", arguments: { action: "cpu_stop" } });
+  check("cpu stop", !result.isError && parse(result).nodes > 0, toolText(result).slice(0, 200));
+
+  result = await client.callTool({ name: "devtools", arguments: { action: "har_start" } });
+  check("har start", !result.isError, toolText(result));
+  await client.callTool({ name: "evaluate", arguments: { expression: "fetch('/').then(r => r.status)" } });
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  result = await client.callTool({ name: "devtools", arguments: { action: "har_stop" } });
+  check("har stop", !result.isError && parse(result).entries >= 1, toolText(result).slice(0, 200));
+
+  result = await client.callTool({ name: "audit", arguments: { action: "list", limit: 5 } });
+  check("audit list", !result.isError && parse(result).entries.length > 0, toolText(result).slice(0, 200));
+
   result = await client.callTool({ name: "tabs", arguments: { action: "new", url: `${base}next` } });
   const tabs = parse(result);
   check("tabs new", tabs.tabs.length === 2, toolText(result));

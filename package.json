@@ -1,7 +1,7 @@
 {
   "name": "cat-burglar-mcp",
-  "version": "0.3.3",
-  "description": "A stealth browser MCP for agents: three engines, diff observations, site memory, and a benchmark harness.",
+  "version": "0.4.0",
+  "description": "A stealth browser MCP for agents: three engines, residential proxies, remote CDP, DevTools, site memory, and benchmarks.",
   "type": "module",
   "bin": {
     "cat-burglar": "./dist/index.js"
@@ -48,7 +48,13 @@
     "patchright",
     "obscura",
     "opencode",
-    "web-scraping"
+    "web-scraping",
+    "proxy",
+    "residential-proxy",
+    "remote-cdp",
+    "devtools",
+    "captcha",
+    "audit"
   ],
   "homepage": "https://github.com/DrMkdaddy/cat-burglar#readme",
   "repository": {

@@ -48,6 +48,11 @@ export function registerLifecycleTools(
       inputSchema: {
         url: z.string().optional().describe("Optional URL to open after launch."),
         engine: engineEnum.optional(),
+        cdp_url: z.string().optional().describe("Remote CDP endpoint (Browserbase, Steel, Browserless, local Chrome)."),
+        cdp_headers: z.record(z.string(), z.string()).optional().describe("Headers for the CDP connection."),
+        proxy_id: z.string().optional().describe("Select a proxy from the configured pool."),
+        proxy_test: z.boolean().optional().describe("Test the selected proxy before launching."),
+        match_geo: z.boolean().optional().describe("Use proxy timezone/locale for the browser context."),
         profile: profileEnum.optional().describe("Observation/verbosity profile (model-adaptive)."),
         headless: z.boolean().optional(),
         allow_private: z
@@ -79,6 +84,11 @@ export function registerLifecycleTools(
 
       await session.launch({
         engine: args.engine,
+        cdpUrl: args.cdp_url,
+        cdpHeaders: args.cdp_headers,
+        proxyId: args.proxy_id,
+        proxyTest: args.proxy_test,
+        matchGeo: args.match_geo,
         profile: args.profile,
         headless: args.headless,
         allowPrivate: args.allow_private,
@@ -141,6 +151,7 @@ export function registerLifecycleTools(
           .optional()
           .describe("Navigation wait condition (default load)."),
         engine: engineEnum.optional().describe("Engine to use when launching a new browser."),
+        cdp_url: z.string().optional().describe("Remote CDP endpoint when launching a new browser."),
         profile: profileEnum.optional().describe("Profile to use when launching a new browser."),
         allow_private: z.boolean().optional(),
       },
@@ -150,6 +161,7 @@ export function registerLifecycleTools(
       if (!session.running) {
         await session.launch({
           engine: args.engine,
+          cdpUrl: args.cdp_url,
           profile: args.profile,
           allowPrivate: args.allow_private,
         });

@@ -2,8 +2,13 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { isProfileName, resolveProfile, type ProfileLimits, type ProfileName } from "./profiles.js";
+import {
+  proxyEntriesFromConfig,
+  type ProxyEntry,
+  type ProxyPoolOptions,
+} from "./proxy.js";
 
-export type EngineKind = "patchright" | "chromium" | "obscura";
+export type EngineKind = "patchright" | "chromium" | "obscura" | "remote";
 export type RiskPolicy = "off" | "warn" | "ask";
 
 export interface Viewport {
@@ -35,6 +40,13 @@ export interface Config {
   limits: ProfileLimits;
   memoryPath: string;
   riskyActionPolicy: RiskPolicy;
+  proxyPool: ProxyEntry[];
+  proxyOptions: Partial<ProxyPoolOptions>;
+  cdpUrl?: string;
+  cdpHeaders?: Record<string, string>;
+  audit: boolean;
+  auditPath: string;
+  idleTimeoutMs: number;
   profileDir: string;
   artifactDir: string;
   obscuraPath: string;
@@ -105,7 +117,7 @@ export function loadConfig(): Config {
 
   const defaultEngine = (envString("BROWSER_MCP_ENGINE", file.defaultEngine as string) ??
     "patchright") as EngineKind;
-  if (!["patchright", "chromium", "obscura"].includes(defaultEngine)) {
+  if (!["patchright", "chromium", "obscura", "remote"].includes(defaultEngine)) {
     throw new Error(`browser-mcp: unknown defaultEngine "${defaultEngine}"`);
   }
 
@@ -127,6 +139,28 @@ export function loadConfig(): Config {
     "BROWSER_MCP_MAX_CONTROLS",
     (file.maxControls as number) ?? profileLimits.maxControls,
   );
+  const proxyPool = proxyEntriesFromConfig(
+    process.env.BROWSER_MCP_PROXY_POOL ?? file.proxyPool ?? [],
+  );
+  const proxyOptionsFile = asRecord(file.proxyOptions);
+  const proxyOptions: Partial<ProxyPoolOptions> = {
+    ...(proxyOptionsFile as Partial<ProxyPoolOptions>),
+    ...(process.env.BROWSER_MCP_PROXY_MODE
+      ? { mode: process.env.BROWSER_MCP_PROXY_MODE as ProxyPoolOptions["mode"] }
+      : {}),
+    ...(process.env.BROWSER_MCP_PROXY_TEST === "1" ? { testOnLaunch: true } : {}),
+    ...(process.env.BROWSER_MCP_PROXY_MATCH_GEO === "0" ? { matchGeo: false } : {}),
+  };
+  let cdpHeaders: Record<string, string> | undefined;
+  const cdpHeadersRaw = envString("BROWSER_MCP_CDP_HEADERS", file.cdpHeaders as string);
+  if (cdpHeadersRaw) {
+    try {
+      const parsed = JSON.parse(cdpHeadersRaw);
+      if (parsed && typeof parsed === "object") cdpHeaders = parsed as Record<string, string>;
+    } catch {
+      throw new Error("BROWSER_MCP_CDP_HEADERS must be a JSON object");
+    }
+  }
   const riskyRaw = (
     envString("BROWSER_MCP_RISKY_ACTION_POLICY", file.riskyActionPolicy as string) ?? "warn"
   ).toLowerCase();
@@ -191,6 +225,16 @@ export function loadConfig(): Config {
         join(HOME, ".cache", "browser-mcp", "site-memory.json"),
     ),
     riskyActionPolicy: riskyRaw as RiskPolicy,
+    proxyPool,
+    proxyOptions,
+    cdpUrl: envString("BROWSER_MCP_CDP_URL", file.cdpUrl as string),
+    cdpHeaders,
+    audit: envBool("BROWSER_MCP_AUDIT", (file.audit as boolean) ?? true),
+    auditPath: expandHome(
+      envString("BROWSER_MCP_AUDIT_PATH", file.auditPath as string) ??
+        join(HOME, ".cache", "browser-mcp", "audit.jsonl"),
+    ),
+    idleTimeoutMs: envInt("BROWSER_MCP_IDLE_TIMEOUT_MS", (file.idleTimeoutMs as number) ?? 0),
     profileDir: expandHome(
       envString("BROWSER_MCP_PROFILE_DIR", file.profileDir as string) ??
         join(HOME, ".cache", "browser-mcp", "profiles"),

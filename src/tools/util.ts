@@ -1,4 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { sanitizeAuditArgs, type AuditLog } from "../audit.js";
 
 export type ContentBlock =
   | { type: "text"; text: string }
@@ -68,6 +69,13 @@ const SLIM_TOOLS = new Set([
 ]);
 
 let toolset: "full" | "slim" = "full";
+let auditLog: AuditLog | null = null;
+let auditOrigin: (() => string | undefined) | null = null;
+
+export function configureAudit(log: AuditLog, origin: () => string | undefined): void {
+  auditLog = log;
+  auditOrigin = origin;
+}
 
 export function configureToolset(mode: "full" | "slim"): void {
   toolset = mode;
@@ -90,9 +98,29 @@ export function defineTool(
 ): void {
   if (!isToolEnabled(name)) return;
   const safeHandler = async (args: any): Promise<ToolResult> => {
+    const started = Date.now();
+    const cleanArgs = sanitizeAuditArgs(name, (args ?? {}) as Record<string, unknown>);
     try {
-      return await handler(args ?? {});
+      const result = await handler(args ?? {});
+      auditLog?.append({
+        at: new Date().toISOString(),
+        tool: name,
+        args: cleanArgs,
+        origin: auditOrigin?.(),
+        ok: !result.isError,
+        durationMs: Date.now() - started,
+      });
+      return result;
     } catch (error) {
+      auditLog?.append({
+        at: new Date().toISOString(),
+        tool: name,
+        args: cleanArgs,
+        origin: auditOrigin?.(),
+        ok: false,
+        error: errorText(error).slice(0, 500),
+        durationMs: Date.now() - started,
+      });
       if (process.env.BROWSER_MCP_DEBUG) {
         process.stderr.write(`[browser-mcp] ${name} failed: ${(error as Error)?.stack}\n`);
       }

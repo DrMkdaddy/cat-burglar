@@ -7,7 +7,8 @@ import type { Config } from "../config.js";
 import type { BrowserSession } from "../session.js";
 import { assessTargetRisk, gateRisk } from "../risk.js";
 import { formatObservation } from "./format.js";
-import { defineTool, json, text } from "./util.js";
+import { defineTool, imageResult, json, text } from "./util.js";
+import { detectCaptcha } from "../page-scripts.js";
 import { describeTarget, targetDescription, targetShape } from "./shared.js";
 
 function toTarget(args: {
@@ -33,6 +34,10 @@ function toTarget(args: {
     name: args.name,
     exact: args.exact,
   };
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
 }
 
 function expandHome(path: string): string {
@@ -288,6 +293,48 @@ export function registerInteractionTools(
       }
       const count = await session.upload(toTarget(args), paths);
       return finish("upload", args, `Uploaded ${count} file(s) to ${describeTarget(args)}.`, risk.warning);
+    },
+  );
+
+  defineTool(
+    server,
+    "captcha",
+    {
+      title: "CAPTCHA check",
+      description:
+        "Detect reCAPTCHA, hCaptcha, Turnstile, DataDome, PerimeterX, Arkose, or text challenges. " +
+        "Returns a screenshot and a manual handoff flag. It does not solve CAPTCHAs.",
+      inputSchema: {
+        action: z.enum(["detect", "wait", "screenshot"]).optional(),
+        timeout_ms: z.number().int().positive().max(300_000).optional(),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    async (args) => {
+      const page = await session.page();
+      const action = args.action ?? "detect";
+      let report = await page.evaluate(detectCaptcha);
+      if (action === "wait") {
+        const started = Date.now();
+        const timeout = args.timeout_ms ?? 60_000;
+        while (report.detected && Date.now() - started < timeout) {
+          await sleep(1_000);
+          report = await page.evaluate(detectCaptcha);
+        }
+      }
+      if (action === "screenshot" || report.detected) {
+        const shot = await session.screenshot({});
+        return imageResult(
+          shot.buffer,
+          `${JSON.stringify(report, null, 2)}
+${
+            report.detected
+              ? "Manual handoff required. Switch to headless:false or complete the challenge in the browser."
+              : "No challenge detected."
+          }`,
+        );
+      }
+      return text(JSON.stringify(report, null, 2));
     },
   );
 

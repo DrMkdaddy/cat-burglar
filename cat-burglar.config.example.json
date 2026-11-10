@@ -27,5 +27,18 @@
   "trackerAllowlist": [],
   "profile": "flash",
   "riskyActionPolicy": "warn",
-  "memoryPath": "~/.cache/browser-mcp/site-memory.json"
+  "memoryPath": "~/.cache/browser-mcp/site-memory.json",
+  "proxyPool": [],
+  "proxyOptions": {
+    "mode": "round-robin",
+    "matchGeo": true,
+    "testOnLaunch": false,
+    "rotateOnError": true,
+    "healthCheckUrl": "https://ipapi.co/json/",
+    "geoLookupUrl": "https://ipapi.co/json/",
+    "timeoutMs": 15000
+  },
+  "audit": true,
+  "auditPath": "~/.cache/browser-mcp/audit.jsonl",
+  "idleTimeoutMs": 0
 }

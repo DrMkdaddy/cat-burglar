@@ -2,16 +2,16 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.DrMkdaddy/cat-burglar",
   "title": "Cat Burglar",
-  "description": "Stealth browser MCP with three engines, diff observations, site memory, and benchmarks.",
+  "description": "Stealth browser MCP with three engines, proxy pools, remote CDP, diff observations, and benchmarks.",
   "repository": {
     "url": "https://github.com/DrMkdaddy/cat-burglar",
     "source": "github"
   },
-  "version": "0.3.3",
+  "version": "0.4.0",
   "packages": [
     {
       "registryType": "oci",
-      "identifier": "ghcr.io/drmkdaddy/cat-burglar:v0.3.3",
+      "identifier": "ghcr.io/drmkdaddy/cat-burglar:v0.4.0",
       "transport": {
         "type": "stdio"
       },
@@ -33,6 +33,27 @@
         {
           "name": "BROWSER_MCP_PROFILE",
           "description": "Observation profile: local, flash, frontier, or auto.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "BROWSER_MCP_PROXY_POOL",
+          "description": "JSON array or newline-separated HTTP/HTTPS/SOCKS5 proxy URLs.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "BROWSER_MCP_CDP_URL",
+          "description": "Remote Chrome DevTools Protocol endpoint for the remote engine.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true
+        },
+        {
+          "name": "BROWSER_MCP_AUDIT",
+          "description": "Set to 0 to disable the local audit log.",
           "isRequired": false,
           "format": "string",
           "isSecret": false

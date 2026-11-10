@@ -1,9 +1,14 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { BrowserSession } from "../session.js";
+import type { AuditLog } from "../audit.js";
 import { defineTool, json, limitedJson } from "./util.js";
 
-export function registerDiagnosticTools(server: McpServer, session: BrowserSession): void {
+export function registerDiagnosticTools(
+  server: McpServer,
+  session: BrowserSession,
+  audit: AuditLog,
+): void {
   defineTool(
     server,
     "network",
@@ -126,4 +131,100 @@ export function registerDiagnosticTools(server: McpServer, session: BrowserSessi
       }
     },
   );
+  defineTool(
+    server,
+    "devtools",
+    {
+      title: "Chrome DevTools",
+      description:
+        "On-demand Chrome DevTools capture. HAR records network requests, CPU profiles show hot functions, " +
+        "heap snapshots capture memory, coverage finds unused JavaScript, and throttle applies network/CPU " +
+        "conditions. Capture state is kept only while an action is running.",
+      inputSchema: {
+        action: z.enum([
+          "har_start",
+          "har_stop",
+          "cpu_start",
+          "cpu_stop",
+          "heap",
+          "throttle",
+          "coverage_start",
+          "coverage_stop",
+        ]),
+        include_bodies: z.boolean().optional().describe("For har_stop: include response bodies."),
+        offline: z.boolean().optional(),
+        latency_ms: z.number().int().min(0).max(60_000).optional(),
+        download_kbps: z.number().min(0).max(1_000_000).optional(),
+        upload_kbps: z.number().min(0).max(1_000_000).optional(),
+        cpu_rate: z.number().min(1).max(20).optional(),
+      },
+      annotations: { readOnlyHint: false },
+    },
+    async (args) => {
+      switch (args.action) {
+        case "har_start":
+          return json(await session.harStart());
+        case "har_stop":
+          return json(await session.harStop(args.include_bodies ?? false));
+        case "cpu_start":
+          return json(await session.cpuProfileStart());
+        case "cpu_stop":
+          return json(await session.cpuProfileStop());
+        case "heap":
+          return json(await session.heapSnapshot());
+        case "coverage_start":
+          return json(await session.coverageStart());
+        case "coverage_stop":
+          return json({ coverage: await session.coverageStop() });
+        case "throttle":
+          return json(
+            await session.throttle({
+              offline: args.offline,
+              latencyMs: args.latency_ms,
+              downloadKbps: args.download_kbps,
+              uploadKbps: args.upload_kbps,
+              cpuRate: args.cpu_rate,
+            }),
+          );
+        default:
+          throw new Error(`unknown devtools action ${args.action}`);
+      }
+    },
+  );
+
+  defineTool(
+    server,
+    "resources",
+    {
+      title: "Process resources",
+      description:
+        "Report process-tree RSS, process count, open pages, network/console buffers, and active profile budgets.",
+      inputSchema: {},
+      annotations: { readOnlyHint: true },
+    },
+    async () => json(session.resources()),
+  );
+
+  defineTool(
+    server,
+    "audit",
+    {
+      title: "Audit log",
+      description:
+        "Read or clear the local audit log of tool calls. Arguments are sanitized before they are written.",
+      inputSchema: {
+        action: z.enum(["list", "clear"]).optional(),
+        limit: z.number().int().positive().max(500).optional(),
+      },
+      annotations: { readOnlyHint: false },
+    },
+    async (args) => {
+      if (args.action === "clear") {
+        audit.clear();
+        return json({ cleared: true, path: audit.path, enabled: audit.enabled });
+      }
+      return json({ path: audit.path, enabled: audit.enabled, entries: audit.list(args.limit ?? 50) });
+    },
+  );
+
 }

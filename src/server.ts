@@ -2,12 +2,13 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { Config } from "./config.js";
 import { BrowserSession } from "./session.js";
 import { SiteMemoryStore } from "./memory.js";
+import { AuditLog } from "./audit.js";
 import { registerLifecycleTools } from "./tools/lifecycle.js";
 import { registerReadTools } from "./tools/read.js";
 import { registerInteractionTools } from "./tools/interact.js";
 import { registerStateTools } from "./tools/state.js";
 import { registerDiagnosticTools } from "./tools/diagnostics.js";
-import { configureToolset } from "./tools/util.js";
+import { configureAudit, configureToolset } from "./tools/util.js";
 
 const INSTRUCTIONS = `Browser automation with one persistent page session.
 
@@ -61,8 +62,10 @@ export function createServer(config: Config): BrowserServer {
   configureToolset(slim ? "slim" : "full");
   const session = new BrowserSession(config);
   const memory = new SiteMemoryStore(config.memoryPath);
+  const audit = new AuditLog(config.auditPath, config.audit);
+  configureAudit(audit, () => session.currentOrigin());
   const server = new McpServer(
-    { name: "catburglar", version: "0.3.3" },
+    { name: "catburglar", version: "0.4.0" },
     {
       instructions: INSTRUCTIONS,
       capabilities: { tools: {} },
@@ -73,7 +76,7 @@ export function createServer(config: Config): BrowserServer {
   registerReadTools(server, session, config);
   registerInteractionTools(server, session, config);
   registerStateTools(server, session, config, memory);
-  registerDiagnosticTools(server, session);
+  registerDiagnosticTools(server, session, audit);
 
   return { server, session };
 }

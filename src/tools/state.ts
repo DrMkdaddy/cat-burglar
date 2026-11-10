@@ -170,6 +170,47 @@ export function registerStateTools(
 
   defineTool(
     server,
+    "proxy",
+    {
+      title: "Proxy pool",
+      description:
+        "Inspect, test, rotate, add, or remove HTTP/HTTPS/SOCKS5 residential proxies. " +
+        "Proxy URLs are redacted in output. Rotation relaunches the browser with the next proxy.",
+      inputSchema: {
+        action: z.enum(["list", "status", "test", "rotate", "add", "remove"]),
+        id: z.string().optional(),
+        url: z
+          .string()
+          .optional()
+          .describe("Proxy URL for add: http://user:pass@host:port or socks5://host:port."),
+        label: z.string().optional(),
+        force: z.boolean().optional().describe("Force a fresh health check."),
+      },
+      annotations: { readOnlyHint: false },
+    },
+    async (args) => {
+      if (args.action === "list" || args.action === "status") {
+        return json(session.proxyStatus());
+      }
+      if (args.action === "test") {
+        return json({ results: await session.proxyTest(args.id, args.force ?? false) });
+      }
+      if (args.action === "rotate") {
+        return json(await session.rotateProxy());
+      }
+      if (args.action === "add") {
+        if (!args.url) throw new Error("add requires url");
+        const id = args.id ?? `proxy-${Date.now().toString(36)}`;
+        session.addProxy({ id, url: args.url, ...(args.label ? { label: args.label } : {}) });
+        return json(session.proxyStatus());
+      }
+      if (!args.id) throw new Error("remove requires id");
+      return json({ removed: session.removeProxy(args.id), ...session.proxyStatus() });
+    },
+  );
+
+  defineTool(
+    server,
     "memory",
     {
       title: "Site memory",

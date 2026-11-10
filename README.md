@@ -20,9 +20,27 @@ Cat Burglar plugs a real browser into your agent. It can run patched stealth Chr
 | **Three engines, one server** | Pick stealth, devtools fidelity, or a 43 MB footprint for the task. Switch without changing clients. |
 | **Diffs, not dumps** | Stable refs, diff snapshots, and bounded change observations after every action. Less context, fewer round trips. |
 | **Site memory** | Per-origin hints and workflows learned after a successful run. Repeated tasks get shorter. |
+| **Any residential proxy** | HTTP, HTTPS, and SOCKS5 pools with auth, sticky or rotating sessions, geo matching, and on-demand health checks. |
+| **Remote CDP and cloud** | Attach to Browserbase, Steel, Browserless, Obscura Cloud, or a local logged-in Chrome. No local browser process. |
+| **Deep DevTools on demand** | HAR, CPU profiles, heap snapshots, coverage, and network/CPU throttling, captured only while you ask. |
 | **Guardrails on by default** | SSRF protection, origin lists, untrusted-content markers, tracker blocking, and a confirmation gate for destructive actions. |
 | **Works with your agent** | Claude Desktop, Claude Code, Cursor, Codex, Gemini CLI, VS Code, Windsurf, Cline, OpenCode, Docker, and any stdio client. |
 | **Measured** | A 12-task local suite with state verification. Adaptive observation cuts text by 29.9% and calls by 15% at the same success rate. |
+
+## Coverage
+
+| Area | What you get |
+| --- | --- |
+| Interaction | Clicks, forms, typing, selects, uploads, drag-free scrolling, tabs, waits |
+| Reading | Snapshots, diffs, Markdown, links, tables, JSON-LD, meta, CSS maps |
+| DevTools | HAR, CPU profiles, heap snapshots, JS coverage, network/CPU throttling |
+| Stealth | Patchright, fingerprint self-check, tracker blocking, WebRTC leak flags, proxy geo matching |
+| Logged-in and remote | Persistent profiles, storage state, local Chrome CDP, Browserbase, Steel, Browserless |
+| Proxies | HTTP, HTTPS, SOCKS5, auth, pools, sticky/random/round-robin, health and geo checks |
+| Memory | Per-origin hints and workflows, learned after success, agent-authored only |
+| Security | SSRF guard, origin lists, untrusted markers, risk gate, audit log |
+| Evaluation | 12-task benchmark, full-vs-adaptive comparison, cross-server LLM runner |
+| OpenCode | Code Mode namespace, 35 tools, 14-tool slim mode, server instructions |
 
 ## Install
 
@@ -38,7 +56,7 @@ From GHCR: `docker run -i --rm ghcr.io/drmkdaddy/cat-burglar:latest`.
 The installer adds a `cat-burglar` binary to your PATH. Install globally with pnpm if you prefer:
 
 ```bash
-pnpm add -g https://github.com/DrMkdaddy/cat-burglar/releases/download/v0.3.3/cat-burglar-mcp-0.3.3.tgz
+pnpm add -g https://github.com/DrMkdaddy/cat-burglar/releases/download/v0.4.0/cat-burglar-mcp-0.4.0.tgz
 cat-burglar doctor
 ```
 
@@ -150,6 +168,54 @@ Use catburglar with engine chromium. Open the product page, start a performance 
 
 A running browser cannot change engines in place. Call `open` with `restart: true`.
 
+## Remote CDP and cloud browsers
+
+Attach to any Chrome DevTools Protocol endpoint instead of launching a local browser:
+
+```json
+{
+  "engine": "remote",
+  "cdp_url": "wss://connect.browserbase.com?apiKey=YOUR_KEY"
+}
+```
+
+This covers Browserbase, Steel, Browserless, Obscura Cloud, or any other CDP provider. For a local logged-in Chrome, start it with a separate profile:
+
+```bash
+google-chrome --remote-debugging-port=9222 --user-data-dir=/tmp/cat-burglar-chrome
+```
+
+Then call `open({ "engine": "remote", "cdp_url": "http://127.0.0.1:9222" })`. The local browser process is not duplicated, so this path uses no extra browser memory.
+
+## Residential proxies
+
+Cat Burglar accepts any HTTP, HTTPS, or SOCKS5 proxy, with or without authentication. A pool can rotate, stay sticky, or be selected per session.
+
+```json
+{
+  "proxyPool": [
+    { "id": "us-1", "url": "http://user:pass@us.proxy.example:8000", "geo": { "timezone": "America/New_York", "locale": "en-US" } },
+    { "id": "de-1", "url": "socks5://user:pass@de.proxy.example:1080", "geo": { "timezone": "Europe/Berlin", "locale": "de-DE" } }
+  ],
+  "proxyOptions": {
+    "mode": "sticky",
+    "matchGeo": true,
+    "testOnLaunch": false,
+    "rotateOnError": true
+  }
+}
+```
+
+You can also pass `host:port:user:pass` and Cat Burglar normalizes it. Use the proxy tool to inspect, test, rotate, add, or remove entries:
+
+```json
+{ "action": "test", "force": true }
+{ "action": "rotate" }
+{ "action": "add", "url": "http://user:pass@proxy.example:8000", "label": "us-residential" }
+```
+
+Proxy URLs are redacted in output and audit logs. When a proxy is active, Chromium gets WebRTC leak protection flags, and `matchGeo` aligns the browser timezone and locale with the proxy exit. Health checks run through `curl` on demand, so they add no browser process.
+
 ## The loop
 
 1. `navigate` to a page.
@@ -160,6 +226,29 @@ A running browser cannot change engines in place. Call `open` with `restart: tru
 6. Run `memory learn` after a successful repeatable workflow.
 
 Refs stay valid while the element remains in the DOM. If an element leaves the page, the action fails with a stale-ref error instead of clicking a clone.
+
+## DevTools on demand
+
+The `devtools` tool captures Chrome internals only while an action is running. Nothing is recorded in the background.
+
+| Action | Result |
+| --- | --- |
+| `har_start` / `har_stop` | HAR 1.2 file with request and response metadata, optional bodies |
+| `cpu_start` / `cpu_stop` | `.cpuprofile` plus the hottest functions |
+| `heap` | `.heapsnapshot` file |
+| `coverage_start` / `coverage_stop` | Unused JavaScript by URL |
+| `throttle` | Network latency, bandwidth, offline mode, and CPU throttling |
+
+```json
+{ "action": "cpu_start" }
+{ "action": "cpu_stop" }
+```
+
+## CAPTCHA handoff
+
+The `captcha` tool detects reCAPTCHA, hCaptcha, Turnstile, DataDome, PerimeterX, Arkose, and common text challenges. It returns a screenshot and `requires_human: true`. It does not solve challenges.
+
+Run `open({ headless: false })` when a human needs to finish the challenge, then call `captcha` with `action: "wait"`.
 
 ## Benchmark
 
@@ -179,15 +268,15 @@ pnpm bench:compare
 
 ## Tools
 
-30 tools by default. 14 in `--slim` mode.
+35 tools by default. 14 in `--slim` mode.
 
 | Group | Tools |
 | --- | --- |
 | Lifecycle | `open`, `close`, `navigate`, `back`, `forward`, `reload`, `status`, `tabs` |
 | Reading | `snapshot`, `markdown`, `extract`, `evaluate`, `screenshot`, `pdf` |
-| Interaction | `click`, `fill`, `type`, `press`, `select`, `hover`, `scroll`, `upload`, `wait` |
-| State | `cookies`, `storage`, `stealth`, `memory` |
-| Diagnostics | `network`, `console`, `perf` |
+| Interaction | `click`, `fill`, `type`, `press`, `select`, `hover`, `scroll`, `upload`, `wait`, `captcha` |
+| State | `cookies`, `storage`, `stealth`, `memory`, `proxy` |
+| Diagnostics | `network`, `console`, `perf`, `devtools`, `resources`, `audit` |
 
 `extract` covers links, tables, JSON-LD, meta tags, text, and CSS field maps. `perf` covers web vitals, CDP metrics, slow resources, and full Chrome traces.
 
@@ -203,6 +292,22 @@ pnpm bench:compare
 - Tracker blocking uses Obscura's 3,520-domain PGL list plus common analytics hosts.
 
 Use these as layers in a defense-in-depth setup. For sensitive accounts, run with the `ask` policy and review the confirmation before approving.
+
+## Resource efficiency
+
+The default is full Chromium for fidelity. The server does not stack browsers, record in the background, or run proxy checks unless asked.
+
+| Choice | Memory impact |
+| --- | --- |
+| `obscura` engine | About 43 MB, versus roughly 1 GB for Chromium |
+| `remote` engine | No local browser process; uses the remote CDP provider |
+| `--slim` | 14 tools instead of 35; lower schema cost |
+| On-demand DevTools | HAR, CPU, heap, and coverage run only during the action |
+| Proxy tests | `curl` only, no browser process |
+| `idleTimeoutMs` | Closes the browser after inactivity when set |
+| Flash profile | Smaller snapshots, markdown, and change observations |
+
+Use the `resources` tool to see process-tree RSS, process count, open pages, and buffer sizes. Background networking, component updates, sync, pings, and metrics are disabled at launch.
 
 ## Research
 
@@ -243,7 +348,7 @@ The tracker list is the only copied data asset. See [`NOTICE`](NOTICE).
 
 ## Status
 
-Version 0.3.3. Benchmarked on a 12-task local suite with raw JSON in the repo. The LLM harness can run the same tasks across four servers. Issues and counterexamples are welcome.
+Version 0.4.0. Benchmarked on a 12-task local suite with raw JSON in the repo. The LLM harness can run the same tasks across four servers. Issues and counterexamples are welcome.
 
 ## License
 

@@ -1,10 +1,18 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import type { Config, EngineKind } from "./config.js";
 import { resolveProfile, type ProfileLimits, type ProfileName } from "./profiles.js";
 import { canonicalOrigin } from "./memory.js";
+import {
+  ProxyPool,
+  parseProxyUrl,
+  redactProxyUrl,
+  type ProxyEntry,
+  type ProxyHealth,
+  type ProxyGeo,
+} from "./proxy.js";
 import {
   diffControls,
   textDelta,
@@ -71,6 +79,12 @@ export interface OpenOptions {
   profile?: ProfileName;
   headless?: boolean;
   proxy?: string;
+  proxyId?: string;
+  proxyTest?: boolean;
+  matchGeo?: boolean;
+  cdpUrl?: string;
+  cdpHeaders?: Record<string, string>;
+  cdpTimeout?: number;
   stealth?: boolean;
   allowPrivate?: boolean;
   viewport?: { width: number; height: number };
@@ -115,6 +129,35 @@ export interface ActionRecord {
   arguments: Record<string, unknown>;
   url: string;
   at: number;
+}
+
+export interface HarResult {
+  path: string;
+  entries: number;
+  bytes: number;
+}
+
+export interface CpuProfileResult {
+  path: string;
+  durationMs: number;
+  nodes: number;
+  top: Array<{ function: string; url: string; hits: number }>;
+}
+
+export interface CoverageEntry {
+  url: string;
+  totalBytes: number;
+  usedBytes: number;
+  unusedBytes: number;
+  unusedPercent: number;
+}
+
+export interface ThrottleOptions {
+  offline?: boolean;
+  latencyMs?: number;
+  downloadKbps?: number;
+  uploadKbps?: number;
+  cpuRate?: number;
 }
 
 export interface PerfSummary {
@@ -199,6 +242,7 @@ export class BrowserSession {
   allowPrivate: boolean;
   humanize: boolean;
   blockTrackers: boolean;
+  guardActive = true;
 
   private context: any = null;
   private browser: any = null;
@@ -220,9 +264,19 @@ export class BrowserSession {
   private snapshotHistory = new Map<string, SnapshotRecord[]>();
   private snapshotSeq = 0;
   private actionLog: ActionRecord[] = [];
+  readonly proxyPool: ProxyPool;
+  currentProxy?: ProxyEntry;
+  currentProxyHealth?: ProxyHealth;
+  private cdpUrl?: string;
+  private lastLaunchOptions: OpenOptions = {};
+  private harSessions = new Map<object, { client: any; entries: Map<string, any>; startedAt: number }>();
+  private cpuSessions = new Map<object, { client: any; startedAt: number }>();
+  private coverageSessions = new Map<object, { client: any; startedAt: number }>();
+  private idleTimer: NodeJS.Timeout | null = null;
 
   constructor(config: Config) {
     this.config = config;
+    this.proxyPool = new ProxyPool(config.proxyPool, config.proxyOptions);
     this.profile = config.profile;
     this.limits = resolveProfile(config.profile);
     this.allowPrivate = config.allowPrivateNetwork;
@@ -244,7 +298,18 @@ export class BrowserSession {
       allowPrivate: this.allowPrivate,
       humanize: this.humanize,
       blockTrackers: this.blockTrackers,
+      guard: this.guardActive,
       viewport: this.viewport,
+      proxy: this.currentProxy
+        ? {
+            id: this.currentProxy.id,
+            label: this.currentProxy.label,
+            url: redactProxyUrl(this.currentProxy.url),
+            health: this.currentProxyHealth ?? null,
+          }
+        : null,
+      proxyPool: this.proxyPool.size,
+      cdp: this.safeCdpUrl(),
       tabs: this.pages.length,
       url: this.safeUrl(),
       networkEntries: this.network.length,
@@ -315,8 +380,33 @@ export class BrowserSession {
     return alive[this.activeIndex];
   }
 
+  private safeCdpUrl(): string | null {
+    if (!this.cdpUrl) return null;
+    try {
+      const url = new URL(this.cdpUrl);
+      for (const key of [...url.searchParams.keys()]) {
+        if (/key|token|secret|auth/i.test(key)) url.searchParams.set(key, "***");
+      }
+      if (url.username) url.username = "***";
+      if (url.password) url.password = "***";
+      return url.toString();
+    } catch {
+      return "***";
+    }
+  }
+
+  private touch(): void {
+    if (this.config.idleTimeoutMs <= 0) return;
+    if (this.idleTimer) clearTimeout(this.idleTimer);
+    this.idleTimer = setTimeout(() => {
+      void this.close();
+    }, this.config.idleTimeoutMs);
+    this.idleTimer.unref?.();
+  }
+
   async page(): Promise<any> {
     if (!this.context) throw new Error("browser is not open; call open/navigate first");
+    this.touch();
     const alive = this.pages.filter((page) => !page.isClosed());
     if (alive.length === 0) {
       const page = await this.context.newPage();
@@ -331,10 +421,11 @@ export class BrowserSession {
 
   async launch(options: OpenOptions = {}): Promise<void> {
     const engine = options.engine ?? this.config.defaultEngine;
-    if (!["patchright", "chromium", "obscura"].includes(engine)) {
+    if (!["patchright", "chromium", "obscura", "remote"].includes(engine)) {
       throw new Error(`unknown engine "${engine}"`);
     }
     if (this.running) await this.close();
+    this.lastLaunchOptions = { ...options };
 
     this.engine = engine;
     this.profile = options.profile ?? this.config.profile;
@@ -349,8 +440,53 @@ export class BrowserSession {
     this.consoleEntries = [];
     this.entryId = 0;
 
+    const cdpUrl = options.cdpUrl ?? this.config.cdpUrl;
+    if (engine === "remote" || cdpUrl) {
+      await this.launchRemote({ ...options, cdpUrl });
+      return;
+    }
+
+    let proxyEntry: ProxyEntry | undefined;
+    if (options.proxy) {
+      proxyEntry = { id: "custom", url: options.proxy };
+    } else if (this.proxyPool.size > 0) {
+      proxyEntry = options.proxyId
+        ? this.proxyPool.find(options.proxyId)
+        : this.proxyPool.select("session");
+      if (options.proxyId && !proxyEntry) throw new Error(`unknown proxy id "${options.proxyId}"`);
+    }
+
+    let proxyHealth: ProxyHealth | undefined;
+    const wantsGeo = options.matchGeo ?? this.config.proxyOptions.matchGeo ?? false;
+    const needsProxyTest =
+      options.proxyTest === true ||
+      this.config.proxyOptions.testOnLaunch === true ||
+      (wantsGeo && !proxyEntry?.geo?.timezone);
+    if (proxyEntry && needsProxyTest) {
+      proxyHealth = await this.proxyPool.testEntry(proxyEntry, { force: options.proxyTest === true });
+      if (
+        !proxyHealth.ok &&
+        this.config.proxyOptions.rotateOnError &&
+        this.proxyPool.size > 1 &&
+        !options.proxy
+      ) {
+        const next = this.proxyPool.next(proxyEntry.id);
+        if (next) {
+          proxyEntry = next;
+          proxyHealth = await this.proxyPool.testEntry(next, { force: true });
+        }
+      }
+    }
+    this.currentProxy = proxyEntry;
+    this.currentProxyHealth = proxyHealth;
+    const geo: ProxyGeo | undefined = proxyEntry
+      ? this.proxyPool.geoFor(proxyEntry, proxyHealth)
+      : undefined;
+    const locale = options.locale ?? geo?.locale ?? this.config.locale;
+    const timezone = options.timezone ?? geo?.timezone ?? this.config.timezone;
+
     if (engine === "obscura") {
-      await this.launchObscura(options);
+      await this.launchObscura({ ...options, proxy: proxyEntry?.url });
       return;
     }
 
@@ -362,18 +498,29 @@ export class BrowserSession {
     const launchOptions: Record<string, unknown> = {
       headless: options.headless ?? this.config.headless,
       viewport: this.viewport,
-      locale: options.locale ?? this.config.locale,
-      timezoneId: options.timezone ?? this.config.timezone,
+      locale,
+      timezoneId: timezone,
       userAgent: options.userAgent ?? this.config.userAgent,
-      proxy: parseProxy(options.proxy ?? this.config.proxy),
+      proxy: proxyEntry ? parseProxyUrl(proxyEntry.url) : undefined,
       acceptDownloads: true,
       ignoreHTTPSErrors: false,
       args: [
         "--disable-dev-shm-usage",
+        "--disable-background-networking",
+        "--disable-component-update",
+        "--disable-sync",
+        "--metrics-recording-only",
+        "--no-pings",
         "--no-first-run",
         "--no-default-browser-check",
         "--force-color-profile=srgb",
         "--disable-blink-features=AutomationControlled",
+        ...(proxyEntry
+          ? [
+              "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+              "--webrtc-ip-handling-policy=disable_non_proxied_udp",
+            ]
+          : []),
         ...(process.env.BROWSER_MCP_NO_SANDBOX === "1" || process.getuid?.() === 0
           ? ["--no-sandbox", "--disable-setuid-sandbox"]
           : []),
@@ -458,17 +605,132 @@ export class BrowserSession {
     await this.afterContextReady();
   }
 
+  private async launchRemote(options: OpenOptions): Promise<void> {
+    const cdpUrl = options.cdpUrl ?? this.config.cdpUrl;
+    if (!cdpUrl) throw new Error("remote engine requires cdp_url or BROWSER_MCP_CDP_URL");
+    this.engine = "remote";
+    this.cdpUrl = cdpUrl;
+    this.currentProxy = undefined;
+    this.currentProxyHealth = undefined;
+    const chromium = await this.loadChromium("chromium");
+    this.browser = await chromium.connectOverCDP(cdpUrl, {
+      headers: options.cdpHeaders ?? this.config.cdpHeaders,
+      timeout: options.cdpTimeout ?? 30_000,
+    });
+    const contexts = this.browser.contexts();
+    this.context = contexts[0] ?? (await this.browser.newContext());
+    await this.afterContextReady();
+  }
+
+  proxyStatus(): Record<string, unknown> {
+    return {
+      engine: this.engine,
+      pool: this.proxyPool.redacted(),
+      count: this.proxyPool.size,
+      current: this.currentProxy
+        ? {
+            id: this.currentProxy.id,
+            label: this.currentProxy.label,
+            url: redactProxyUrl(this.currentProxy.url),
+            health: this.currentProxyHealth ?? null,
+          }
+        : null,
+      mode: this.proxyPool.options.mode,
+    };
+  }
+
+  async proxyTest(id?: string, force = false): Promise<ProxyHealth[]> {
+    return this.proxyPool.test(id, { force });
+  }
+
+  async rotateProxy(): Promise<Record<string, unknown>> {
+    if (this.engine === "remote") throw new Error("cannot rotate the proxy of a remote CDP browser");
+    if (this.proxyPool.size === 0) throw new Error("no proxy pool configured");
+    const next = this.proxyPool.next(this.currentProxy?.id);
+    if (!next) throw new Error("no proxy available");
+    await this.launch({ ...this.lastLaunchOptions, proxy: undefined, proxyId: next.id });
+    return this.proxyStatus();
+  }
+
+  resources(): Record<string, unknown> {
+    const own = process.memoryUsage();
+    const rssMb = Number((own.rss / 1024 / 1024).toFixed(1));
+    const pids = this.processTree(process.pid);
+    let treeRssKb = 0;
+    for (const pid of pids) {
+      try {
+        const status = readFileSync(`/proc/${pid}/status`, "utf8");
+        const match = status.match(/VmRSS:\s+(\d+)\s+kB/);
+        if (match) treeRssKb += Number(match[1]);
+      } catch {
+        // ignore
+      }
+    }
+    return {
+      processRssMb: rssMb,
+      treeRssMb: Number((treeRssKb / 1024).toFixed(1)),
+      processes: pids.length,
+      pages: this.pages.filter((page) => !page.isClosed()).length,
+      networkEntries: this.network.length,
+      consoleEntries: this.consoleEntries.length,
+      snapshotTabs: this.snapshotHistory.size,
+      engine: this.engine,
+      profile: this.profile,
+      limits: this.limits,
+    };
+  }
+
+  private processTree(rootPid: number): number[] {
+    const parents = new Map<number, number>();
+    try {
+      for (const entry of readdirSync("/proc")) {
+        if (!/^\d+$/.test(entry)) continue;
+        try {
+          const stat = readFileSync(`/proc/${entry}/stat`, "utf8");
+          const close = stat.lastIndexOf(")");
+          const fields = stat.slice(close + 2).split(" ");
+          parents.set(Number(entry), Number(fields[1]));
+        } catch {
+          // ignore
+        }
+      }
+    } catch {
+      return [rootPid];
+    }
+    const result = [rootPid];
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const [pid, parent] of parents) {
+        if (result.includes(parent) && !result.includes(pid)) {
+          result.push(pid);
+          changed = true;
+        }
+      }
+    }
+    return result;
+  }
+
   private async afterContextReady(): Promise<void> {
     this.context.setDefaultTimeout(this.config.actionTimeoutMs);
-    await installRequestGuard(this.context, this.config, {
-      allowPrivate: this.allowPrivate,
-      blockTrackers: this.blockTrackers,
-      onBlock: (url, reason) => {
-        if (process.env.BROWSER_MCP_DEBUG) {
-          process.stderr.write(`[browser-mcp] blocked ${url}: ${reason}\n`);
-        }
-      },
-    });
+    this.guardActive = true;
+    try {
+      await installRequestGuard(this.context, this.config, {
+        allowPrivate: this.allowPrivate,
+        blockTrackers: this.blockTrackers,
+        onBlock: (url, reason) => {
+          if (process.env.BROWSER_MCP_DEBUG) {
+            process.stderr.write(`[browser-mcp] blocked ${url}: ${reason}\n`);
+          }
+        },
+      });
+    } catch (error) {
+      if (this.engine !== "remote") throw error;
+      this.guardActive = false;
+      if (process.env.BROWSER_MCP_DEBUG) {
+        process.stderr.write(`[browser-mcp] remote request guard unavailable: ${(error as Error).message}\n`);
+      }
+    }
 
     this.pages = [];
     this.pageByKey.clear();
@@ -486,6 +748,7 @@ export class BrowserSession {
       this.registerPage(page);
     }
     this.activeIndex = 0;
+    this.touch();
   }
 
   private attachPage(page: any): void {
@@ -591,6 +854,10 @@ export class BrowserSession {
   }
 
   async close(): Promise<void> {
+    if (this.idleTimer) {
+      clearTimeout(this.idleTimer);
+      this.idleTimer = null;
+    }
     this.traceClients.clear();
     try {
       await this.context?.close();
@@ -608,6 +875,9 @@ export class BrowserSession {
     this.activeIndex = 0;
     this.snapshotHistory.clear();
     this.actionLog = [];
+    this.currentProxy = undefined;
+    this.currentProxyHealth = undefined;
+    this.cdpUrl = undefined;
     this.killObscura();
     this.engine = null;
   }
@@ -1297,6 +1567,268 @@ export class BrowserSession {
   async resourceTimings(limit: number): Promise<Array<Record<string, unknown>>> {
     const page = await this.page();
     return page.evaluate(resourceTimingsPageScript, limit) as Promise<Array<Record<string, unknown>>>;
+  }
+
+  async harStart(): Promise<{ started: true }> {
+    const page = await this.page();
+    if (this.harSessions.has(page)) throw new Error("HAR capture is already running");
+    const client = await this.context.newCDPSession(page);
+    const entries = new Map<string, any>();
+    await client.send("Network.enable", {
+      maxTotalBufferSize: 100_000_000,
+      maxResourceBufferSize: 10_000_000,
+      maxPostDataSize: 1_000_000,
+    });
+    client.on("Network.requestWillBeSent", (event: any) => {
+      const current = entries.get(event.requestId) ?? {};
+      entries.set(event.requestId, {
+        ...current,
+        requestId: event.requestId,
+        url: event.request.url,
+        method: event.request.method,
+        requestHeaders: event.request.headers ?? {},
+        postData: event.request.postData,
+        startedAt: Date.now(),
+        wallTime: event.wallTime,
+      });
+    });
+    client.on("Network.responseReceived", (event: any) => {
+      const current = entries.get(event.requestId) ?? {};
+      entries.set(event.requestId, {
+        ...current,
+        status: event.response.status,
+        statusText: event.response.statusText,
+        mimeType: event.response.mimeType,
+        responseHeaders: event.response.headers ?? {},
+      });
+    });
+    client.on("Network.loadingFinished", (event: any) => {
+      const current = entries.get(event.requestId) ?? {};
+      entries.set(event.requestId, {
+        ...current,
+        finishedAt: Date.now(),
+        encodedDataLength: event.encodedDataLength,
+      });
+    });
+    client.on("Network.loadingFailed", (event: any) => {
+      const current = entries.get(event.requestId) ?? {};
+      entries.set(event.requestId, {
+        ...current,
+        finishedAt: Date.now(),
+        failed: event.errorText,
+      });
+    });
+    this.harSessions.set(page, { client, entries, startedAt: Date.now() });
+    return { started: true };
+  }
+
+  async harStop(includeBodies = false): Promise<HarResult> {
+    const page = await this.page();
+    const session = this.harSessions.get(page);
+    if (!session) throw new Error("no HAR capture is running");
+    this.harSessions.delete(page);
+    const { client, entries } = session;
+    const harEntries: any[] = [];
+    for (const entry of entries.values()) {
+      let body: { text?: string; encoding?: string } = {};
+      if (includeBodies) {
+        try {
+          const response = await client.send("Network.getResponseBody", {
+            requestId: entry.requestId,
+          });
+          body = {
+            text: response.base64Encoded
+              ? response.body
+              : response.body,
+            ...(response.base64Encoded ? { encoding: "base64" } : {}),
+          };
+        } catch {
+          // body was evicted or unavailable
+        }
+      }
+      const headers = (values: Record<string, string> | undefined): Array<{ name: string; value: string }> =>
+        Object.entries(values ?? {}).map(([name, value]) => ({ name, value: String(value) }));
+      harEntries.push({
+        startedDateTime: new Date(entry.startedAt ?? Date.now()).toISOString(),
+        time: Math.max(0, (entry.finishedAt ?? Date.now()) - (entry.startedAt ?? Date.now())),
+        request: {
+          method: entry.method ?? "GET",
+          url: entry.url ?? "",
+          httpVersion: "HTTP/1.1",
+          headers: headers(entry.requestHeaders),
+          queryString: [],
+          cookies: [],
+          headersSize: -1,
+          bodySize: entry.postData?.length ?? 0,
+          ...(entry.postData ? { postData: { mimeType: "application/x-www-form-urlencoded", text: entry.postData } } : {}),
+        },
+        response: {
+          status: entry.status ?? 0,
+          statusText: entry.statusText ?? "",
+          httpVersion: "HTTP/1.1",
+          headers: headers(entry.responseHeaders),
+          cookies: [],
+          content: {
+            size: entry.encodedDataLength ?? 0,
+            mimeType: entry.mimeType ?? "",
+            ...body,
+          },
+          redirectURL: "",
+          headersSize: -1,
+          bodySize: entry.encodedDataLength ?? 0,
+        },
+        cache: {},
+        timings: { send: 0, wait: 0, receive: 0 },
+        ...(entry.failed ? { _error: entry.failed } : {}),
+      });
+    }
+    const har = {
+      log: {
+        version: "1.2",
+        creator: { name: "cat-burglar", version: "0.4.0" },
+        pages: [],
+        entries: harEntries,
+      },
+    };
+    const path = safeArtifactPath(this.config.artifactDir, undefined, "network", ".har");
+    const data = JSON.stringify(har, null, 2);
+    writeArtifact(path, data);
+    await client.send("Network.disable").catch(() => undefined);
+    await client.detach().catch(() => undefined);
+    return { path, entries: harEntries.length, bytes: Buffer.byteLength(data) };
+  }
+
+  async cpuProfileStart(): Promise<{ started: true }> {
+    const page = await this.page();
+    if (this.cpuSessions.has(page)) throw new Error("CPU profiling is already running");
+    const client = await this.context.newCDPSession(page);
+    await client.send("Profiler.enable");
+    await client.send("Profiler.setSamplingInterval", { interval: 1000 });
+    await client.send("Profiler.start");
+    this.cpuSessions.set(page, { client, startedAt: Date.now() });
+    return { started: true };
+  }
+
+  async cpuProfileStop(): Promise<CpuProfileResult> {
+    const page = await this.page();
+    const session = this.cpuSessions.get(page);
+    if (!session) throw new Error("no CPU profile is running");
+    this.cpuSessions.delete(page);
+    const { client, startedAt } = session;
+    const { profile } = await client.send("Profiler.stop");
+    const path = safeArtifactPath(this.config.artifactDir, undefined, "cpu", ".cpuprofile");
+    writeArtifact(path, JSON.stringify(profile));
+    const nodes = Array.isArray(profile.nodes) ? profile.nodes : [];
+    const top = nodes
+      .map((node: any) => ({
+        function: node.callFrame?.functionName || "(anonymous)",
+        url: node.callFrame?.url || "",
+        hits: node.hitCount ?? 0,
+      }))
+      .filter((node: any) => node.hits > 0)
+      .sort((a: any, b: any) => b.hits - a.hits)
+      .slice(0, 10);
+    await client.send("Profiler.disable").catch(() => undefined);
+    await client.detach().catch(() => undefined);
+    return { path, durationMs: Date.now() - startedAt, nodes: nodes.length, top };
+  }
+
+  async heapSnapshot(): Promise<{ path: string; bytes: number }> {
+    const page = await this.page();
+    const client = await this.context.newCDPSession(page);
+    await client.send("HeapProfiler.enable");
+    const chunks: string[] = [];
+    const onChunk = (event: any) => chunks.push(event.chunk);
+    client.on("HeapProfiler.addHeapSnapshotChunk", onChunk);
+    await client.send("HeapProfiler.takeHeapSnapshot", {
+      reportProgress: false,
+      captureNumericValue: false,
+    });
+    client.off("HeapProfiler.addHeapSnapshotChunk", onChunk);
+    const path = safeArtifactPath(this.config.artifactDir, undefined, "heap", ".heapsnapshot");
+    const data = chunks.join("");
+    writeArtifact(path, data);
+    await client.detach().catch(() => undefined);
+    return { path, bytes: Buffer.byteLength(data) };
+  }
+
+  async coverageStart(): Promise<{ started: true }> {
+    const page = await this.page();
+    if (this.coverageSessions.has(page)) throw new Error("coverage is already running");
+    const client = await this.context.newCDPSession(page);
+    await client.send("Profiler.enable");
+    await client.send("Profiler.startPreciseCoverage", { callCount: true, detailed: true });
+    this.coverageSessions.set(page, { client, startedAt: Date.now() });
+    return { started: true };
+  }
+
+  async coverageStop(): Promise<CoverageEntry[]> {
+    const page = await this.page();
+    const session = this.coverageSessions.get(page);
+    if (!session) throw new Error("no coverage capture is running");
+    this.coverageSessions.delete(page);
+    const { client } = session;
+    const { result } = await client.send("Profiler.takePreciseCoverage");
+    const rows: CoverageEntry[] = [];
+    for (const script of result ?? []) {
+      let totalBytes = 0;
+      let usedBytes = 0;
+      for (const fn of script.functions ?? []) {
+        for (const range of fn.ranges ?? []) {
+          const length = Math.max(0, (range.endOffset ?? 0) - (range.startOffset ?? 0));
+          totalBytes = Math.max(totalBytes, range.endOffset ?? 0);
+          if ((range.count ?? 0) > 0) usedBytes += length;
+        }
+      }
+      if (totalBytes === 0) continue;
+      usedBytes = Math.min(totalBytes, usedBytes);
+      rows.push({
+        url: script.url || "(inline)",
+        totalBytes,
+        usedBytes,
+        unusedBytes: totalBytes - usedBytes,
+        unusedPercent: Number((((totalBytes - usedBytes) / totalBytes) * 100).toFixed(1)),
+      });
+    }
+    await client.send("Profiler.disable").catch(() => undefined);
+    await client.detach().catch(() => undefined);
+    return rows.sort((a, b) => b.unusedBytes - a.unusedBytes).slice(0, 30);
+  }
+
+  async throttle(options: ThrottleOptions): Promise<Record<string, unknown>> {
+    const page = await this.page();
+    const client = await this.context.newCDPSession(page);
+    await client.send("Network.enable");
+    const download = options.downloadKbps === undefined ? -1 : Math.round((options.downloadKbps * 1024) / 8);
+    const upload = options.uploadKbps === undefined ? -1 : Math.round((options.uploadKbps * 1024) / 8);
+    await client.send("Network.emulateNetworkConditions", {
+      offline: options.offline ?? false,
+      latency: options.latencyMs ?? 0,
+      downloadThroughput: download,
+      uploadThroughput: upload,
+    });
+    if (options.cpuRate !== undefined) {
+      await client.send("Emulation.setCPUThrottlingRate", { rate: options.cpuRate });
+    }
+    await client.detach().catch(() => undefined);
+    return {
+      offline: options.offline ?? false,
+      latencyMs: options.latencyMs ?? 0,
+      downloadKbps: options.downloadKbps ?? null,
+      uploadKbps: options.uploadKbps ?? null,
+      cpuRate: options.cpuRate ?? 1,
+    };
+  }
+
+  addProxy(entry: ProxyEntry): void {
+    this.proxyPool.entries.push(entry);
+  }
+
+  removeProxy(id: string): boolean {
+    const index = this.proxyPool.entries.findIndex((entry) => entry.id === id);
+    if (index === -1) return false;
+    this.proxyPool.entries.splice(index, 1);
+    return true;
   }
 
   async perfMetrics(): Promise<Record<string, number>> {

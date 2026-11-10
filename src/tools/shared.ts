@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const engineEnum = z.enum(["patchright", "chromium", "obscura"]);
+export const engineEnum = z.enum(["patchright", "chromium", "obscura", "remote"]);
 
 export const targetShape = {
   ref: z

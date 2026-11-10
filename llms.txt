@@ -12,10 +12,12 @@
 
 ## What it does
 
-Cat Burglar is a local stdio MCP server for browser work. It exposes 30 tools, or 14 in
-`--slim` mode. It can drive Patchright stealth Chromium, stock Chromium, or Obscura's
-Rust engine. It returns compact snapshots, diffs, and post-action change observations.
-It stores per-origin hints and workflows, and gates high-impact actions.
+Cat Burglar is a local stdio MCP server for browser work. It exposes 35 tools, or 14 in
+`--slim` mode. It can drive Patchright stealth Chromium, stock Chromium, Obscura's Rust
+engine, or any remote CDP endpoint. It returns compact snapshots, diffs, and post-action
+change observations. It stores per-origin hints and workflows, supports HTTP/HTTPS/SOCKS5
+residential proxy pools with geo matching, captures HAR/CPU/heap/coverage on demand, and
+gates high-impact actions.
 
 ## Quick install
 
