@@ -54,6 +54,8 @@ export function snapshotPage(args: { maxControls: number; maxText: number }): Sn
     if (typeof check === "function") {
       try {
         if (!check.call(el, { checkOpacity: true, checkVisibilityCSS: true })) return false;
+        const rect = el.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
       } catch {
         // fall through to the manual checks
       }
@@ -77,12 +79,18 @@ export function snapshotPage(args: { maxControls: number; maxText: number }): Sn
     return norm((el as HTMLElement).innerText ?? el.textContent ?? "");
   };
 
+  const labelMap = new Map<string, string>();
+  for (const label of Array.from(document.querySelectorAll("label[for]"))) {
+    const forId = label.getAttribute("for");
+    if (forId && !labelMap.has(forId)) {
+      labelMap.set(forId, norm(label.textContent));
+    }
+  }
+
   const labelFor = (el: Element): string => {
     const id = el.getAttribute("id");
-    if (id) {
-      const escaped = (window as any).CSS?.escape ? CSS.escape(id) : id.replace(/"/g, '\\"');
-      const label = document.querySelector(`label[for="${escaped}"]`);
-      if (label) return norm(label.textContent);
+    if (id && labelMap.has(id)) {
+      return labelMap.get(id)!;
     }
     const wrapping = el.closest("label");
     return wrapping ? norm(wrapping.textContent) : "";
@@ -257,20 +265,41 @@ export function snapshotPage(args: { maxControls: number; maxText: number }): Sn
   let textTruncated = false;
   const excerptLimit = Math.max(args.maxText * 2, 2_000);
 
+  const parentVis = new WeakMap<Element, boolean>();
+  const isParentVisible = (parent: Element): boolean => {
+    let vis = parentVis.get(parent);
+    if (vis !== undefined) return vis;
+    if (parent.closest("script, style, noscript, svg, canvas, iframe, template")) {
+      parentVis.set(parent, false);
+      return false;
+    }
+    const check = (parent as any).checkVisibility;
+    if (typeof check === "function") {
+      try {
+        vis = Boolean(check.call(parent, { checkOpacity: true, checkVisibilityCSS: true }));
+        parentVis.set(parent, vis);
+        return vis;
+      } catch {
+        // fall through
+      }
+    }
+    const style = getComputedStyle(parent);
+    vis = style.display !== "none" && style.visibility !== "hidden" && style.visibility !== "collapse";
+    parentVis.set(parent, vis);
+    return vis;
+  };
+
   const walker = document.createTreeWalker(document.body ?? document.documentElement, NodeFilter.SHOW_TEXT);
   let node = walker.nextNode();
   while (node) {
     const parent = node.parentElement;
-    if (parent && !parent.closest("script, style, noscript, svg, canvas, iframe, template")) {
-      const style = getComputedStyle(parent);
-      if (style.display !== "none" && style.visibility !== "hidden") {
-        const value = norm(node.nodeValue);
-        if (value) {
-          const last = textParts[textParts.length - 1];
-          if (last !== value) {
-            textParts.push(value);
-            totalText += value.length + 1;
-          }
+    if (parent && isParentVisible(parent)) {
+      const value = norm(node.nodeValue);
+      if (value) {
+        const last = textParts[textParts.length - 1];
+        if (last !== value) {
+          textParts.push(value);
+          totalText += value.length + 1;
         }
       }
     }
@@ -411,6 +440,14 @@ export function extractStructured(args: {
     }
   };
   const visible = (el: Element): boolean => {
+    const check = (el as any).checkVisibility;
+    if (typeof check === "function") {
+      try {
+        return Boolean(check.call(el, { checkOpacity: true, checkVisibilityCSS: true }));
+      } catch {
+        // fall through
+      }
+    }
     const style = getComputedStyle(el);
     return style.display !== "none" && style.visibility !== "hidden";
   };

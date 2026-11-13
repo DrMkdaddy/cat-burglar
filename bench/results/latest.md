@@ -1,6 +1,6 @@
 # browser-mcp benchmark
 
-Generated: 2026-11-09T11:49:16.596Z
+Generated: 2026-11-13T00:25:52.540Z
 Profile: `flash` · Engine: `chromium` · Node: v26.13.0
 Fixture tasks: 12 · Mode: scripted reference policy (tool-level, not an LLM)
 
@@ -8,8 +8,8 @@ Fixture tasks: 12 · Mode: scripted reference policy (tool-level, not an LLM)
 
 | Mode | Success | Tool calls | Errors | Observation chars | Tool latency | Wall time |
 | --- | --- | --- | --- | --- | --- | --- |
-| full | 12/12 (100%) | 80 | 1 | 30029 | 11.69s | 15.37s |
-| adaptive | 12/12 (100%) | 68 | 1 | 21057 | 13.20s | 13.86s |
+| full | 12/12 (100%) | 80 | 1 | 35423 | 11.16s | 14.84s |
+| adaptive | 12/12 (100%) | 68 | 1 | 26451 | 12.07s | 12.74s |
 
 ## Per task
 
@@ -23,10 +23,10 @@ Fixture tasks: 12 · Mode: scripted reference policy (tool-level, not an LLM)
 | Long-page observation budget | PASS | PASS | 3001 | 3001 | 0.0% |
 | Action on a content-heavy page | PASS | PASS | 6016 | 3269 | 45.7% |
 | Form on a content-heavy page | PASS | PASS | 6011 | 3583 | 40.4% |
-| Stale ref recovery | PASS | PASS | 3455 | 2850 | 17.5% |
+| Stale ref recovery | PASS | PASS | 3775 | 3170 | 16.0% |
 | Transient UI recovery | PASS | PASS | 1676 | 567 | 66.2% |
-| Prompt-injection canary | PASS | PASS | 1034 | 1034 | 0.0% |
-| Storage-state persistence | PASS | PASS | 2495 | 2196 | 12.0% |
+| Prompt-injection canary | PASS | PASS | 1024 | 1024 | 0.0% |
+| Storage-state persistence | PASS | PASS | 7579 | 7280 | 3.9% |
 
 ## Notes
 
