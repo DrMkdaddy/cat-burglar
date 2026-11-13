@@ -154,6 +154,23 @@ try {
   });
   check("click effect", toolText(result).includes("clicked-ok"), toolText(result));
 
+  result = await client.callTool({
+    name: "batch",
+    arguments: {
+      actions: [
+        { kind: "fill", ref: refs.Email, value: "batch@example.com" },
+        { kind: "click", ref: refs.Go },
+      ],
+    },
+  });
+  check("batch execution", !result.isError && toolText(result).includes("Executed 2 batch action(s)"));
+
+  result = await client.callTool({
+    name: "snapshot",
+    arguments: { diff: false, viewport_only: true },
+  });
+  check("snapshot viewport_only", !result.isError && toolText(result).includes("Email"), toolText(result));
+
   result = await client.callTool({ name: "markdown", arguments: {} });
   check("markdown extraction", toolText(result).includes("Readable body text"), toolText(result).slice(0, 200));
 

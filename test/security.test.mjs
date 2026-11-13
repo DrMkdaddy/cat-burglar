@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   checkUrl,
+  installRequestGuard,
   isPrivateOrReservedIp,
   isTrackerHost,
   originAllowed,
@@ -107,4 +108,41 @@ test("tracker blocklist matches subdomains but not the parent site", () => {
 
   const allowlisted = { ...config, trackerAllowlist: ["google-analytics.com"] };
   assert.equal(isTrackerHost("www.google-analytics.com", allowlisted), false);
+});
+
+test("request guard blocks image, media, and font requests when blockMedia is enabled", async () => {
+  let routeHandler;
+  const mockContext = {
+    route: async (_pattern, handler) => {
+      routeHandler = handler;
+    },
+  };
+  const blocked = [];
+  await installRequestGuard(mockContext, config, {
+    allowPrivate: true,
+    blockTrackers: false,
+    blockMedia: true,
+    onBlock: (url, reason) => blocked.push({ url, reason }),
+  });
+
+  let aborted = false;
+  let continued = false;
+  const mockImageRoute = {
+    request: () => ({
+      url: () => "https://example.com/banner.png",
+      resourceType: () => "image",
+    }),
+    abort: async () => {
+      aborted = true;
+    },
+    continue: async () => {
+      continued = true;
+    },
+  };
+
+  await routeHandler(mockImageRoute);
+  assert.equal(aborted, true);
+  assert.equal(continued, false);
+  assert.equal(blocked.length, 1);
+  assert.match(blocked[0].reason, /media blocked/);
 });

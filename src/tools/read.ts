@@ -39,6 +39,10 @@ export function registerReadTools(
           .string()
           .optional()
           .describe("Diff against a specific snapshot id (e.g. s4) instead of the latest."),
+        viewport_only: z
+          .boolean()
+          .optional()
+          .describe("Filter controls and body text to only those currently visible in the browser viewport."),
       },
       annotations: { readOnlyHint: true },
     },
@@ -48,6 +52,7 @@ export function registerReadTools(
         maxChars,
         args.max_controls ?? session.limits.maxControls,
         args.since,
+        args.viewport_only,
       );
       const diffMode =
         args.diff ?? (args.since !== undefined ? true : session.limits.diffDefault);

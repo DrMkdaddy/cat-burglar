@@ -63,9 +63,11 @@ const SLIM_TOOLS = new Set([
   "screenshot",
   "click",
   "fill",
+  "type",
   "press",
   "select",
   "wait",
+  "batch",
 ]);
 
 let toolset: "full" | "slim" = "full";

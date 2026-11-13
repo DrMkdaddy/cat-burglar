@@ -71,6 +71,7 @@ export function registerLifecycleTools(
         timezone: z.string().optional(),
         humanize: z.boolean().optional().describe("Humanized mouse/typing (default true)."),
         block_trackers: z.boolean().optional(),
+        block_media: z.boolean().optional().describe("Abort image, media, and font requests to save bandwidth and speed up scraping."),
         restart: z.boolean().optional().describe("Close an open browser first."),
       },
       annotations: { readOnlyHint: false },
@@ -104,6 +105,7 @@ export function registerLifecycleTools(
         timezone: args.timezone,
         humanize: args.humanize,
         blockTrackers: args.block_trackers,
+        blockMedia: args.block_media,
       });
 
       let navigation: Record<string, unknown> | undefined;

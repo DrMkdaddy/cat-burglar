@@ -12,6 +12,7 @@ export interface UrlCheck {
 export interface GuardOptions {
   allowPrivate: boolean;
   blockTrackers: boolean;
+  blockMedia?: boolean;
   onBlock?: (url: string, reason: string) => void;
 }
 
@@ -354,6 +355,13 @@ export async function installRequestGuard(
 
     const originCheck = originAllowed(url, config);
     if (!originCheck.ok) return block(route, url, originCheck.reason ?? "origin blocked");
+
+    if (options.blockMedia) {
+      const type = request.resourceType();
+      if (type === "image" || type === "media" || type === "font") {
+        return block(route, url, `media blocked: ${type}`);
+      }
+    }
 
     if (options.blockTrackers) {
       try {

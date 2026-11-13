@@ -98,6 +98,7 @@ export interface OpenOptions {
   timezone?: string;
   humanize?: boolean;
   blockTrackers?: boolean;
+  blockMedia?: boolean;
 }
 
 export interface ClickOptions {
@@ -247,6 +248,7 @@ export class BrowserSession {
   allowPrivate: boolean;
   humanize: boolean;
   blockTrackers: boolean;
+  blockMedia = false;
   guardActive = true;
 
   private context: any = null;
@@ -309,6 +311,7 @@ export class BrowserSession {
       allowPrivate: this.allowPrivate,
       humanize: this.humanize,
       blockTrackers: this.blockTrackers,
+      blockMedia: this.blockMedia,
       guard: this.guardActive,
       viewport: this.viewport,
       proxy: this.currentProxy
@@ -448,6 +451,7 @@ export class BrowserSession {
     this.allowPrivate = options.allowPrivate ?? this.config.allowPrivateNetwork;
     this.humanize = options.humanize ?? this.config.humanize;
     this.blockTrackers = options.blockTrackers ?? this.config.blockTrackers;
+    this.blockMedia = Boolean(options.blockMedia);
     this.viewport = options.viewport ?? { ...this.config.viewport };
     this.network = [];
     this.consoleEntries = [];
@@ -755,6 +759,7 @@ export class BrowserSession {
       await installRequestGuard(this.context, this.config, {
         allowPrivate: this.allowPrivate,
         blockTrackers: this.blockTrackers,
+        blockMedia: this.blockMedia,
         onBlock: (url, reason) => {
           if (process.env.BROWSER_MCP_DEBUG) {
             process.stderr.write(`[browser-mcp] blocked ${url}: ${reason}\n`);
@@ -1039,11 +1044,13 @@ export class BrowserSession {
     maxChars: number,
     maxControls: number,
     since?: string,
+    viewportOnly?: boolean,
   ): Promise<SnapshotResult> {
     const page = await this.page();
     const data = (await page.evaluate(snapshotPage, {
       maxControls,
       maxText: maxChars,
+      viewportOnly: Boolean(viewportOnly),
     })) as SnapshotData;
     const history = this.historyFor(page);
     const previous =

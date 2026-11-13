@@ -421,4 +421,100 @@ ${
       return json({ waited: true, selector: args.selector, text: args.text });
     },
   );
+
+  defineTool(
+    server,
+    "batch",
+    {
+      title: "Batch actions",
+      description:
+        "Execute a sequence of browser actions (click, fill, type, press, select, hover, scroll, wait) in a single round-trip without intermediate observations. Returns a single final change observation.",
+      inputSchema: {
+        actions: z
+          .array(
+            z.object({
+              kind: z.enum(["click", "fill", "type", "press", "select", "hover", "scroll", "wait"]),
+              ref: z.string().optional(),
+              selector: z.string().optional(),
+              text: z.string().optional(),
+              role: z.string().optional(),
+              name: z.string().optional(),
+              exact: z.boolean().optional(),
+              value: z.string().optional(),
+              values: z.array(z.string()).optional(),
+              key: z.string().optional(),
+              button: z.enum(["left", "right", "middle"]).optional(),
+              click_count: z.number().int().min(1).max(3).optional(),
+              delay_ms: z.number().int().positive().optional(),
+              direction: z.enum(["up", "down", "left", "right", "top", "bottom"]).optional(),
+              amount: z.number().int().positive().optional(),
+              time_ms: z.number().int().positive().max(120_000).optional(),
+              state: z.enum(["attached", "detached", "visible", "hidden"]).optional(),
+              confirm: z.boolean().optional(),
+            }),
+          )
+          .describe("Ordered actions to execute sequentially."),
+        observe: z.boolean().optional().describe("Return post-batch change observation (default true)."),
+      },
+      annotations: { readOnlyHint: false },
+    },
+    async (args) => {
+      if (!args.actions || args.actions.length === 0) {
+        return text("No actions provided in batch.", true);
+      }
+      let completed = 0;
+      for (const step of args.actions) {
+        const risk = riskGate(step);
+        if (risk.error) {
+          return text(`Batch aborted at step ${completed + 1} (${step.kind}): ${risk.error}`, true);
+        }
+        const target = toTarget(step);
+        switch (step.kind) {
+          case "click":
+            await session.click(target, {
+              button: step.button,
+              clickCount: step.click_count,
+            });
+            break;
+          case "fill":
+            if (step.value === undefined) throw new Error(`batch fill at step ${completed + 1} requires value`);
+            await session.fill(target, step.value);
+            break;
+          case "type":
+            if (!step.text) throw new Error(`batch type at step ${completed + 1} requires text`);
+            await session.type(target, step.text, { delay: step.delay_ms });
+            break;
+          case "press":
+            if (!step.key) throw new Error(`batch press at step ${completed + 1} requires key`);
+            await session.press(step.key);
+            break;
+          case "select":
+            if (!step.values) throw new Error(`batch select at step ${completed + 1} requires values`);
+            await session.select(target, step.values);
+            break;
+          case "hover":
+            await session.hover(target);
+            break;
+          case "scroll":
+            await session.scroll({
+              direction: step.direction,
+              amount: step.amount,
+              ref: step.ref,
+              selector: step.selector,
+            });
+            break;
+          case "wait":
+            await session.waitFor({
+              selector: step.selector,
+              text: step.text,
+              timeout: step.time_ms,
+              state: step.state,
+            });
+            break;
+        }
+        completed++;
+      }
+      return finish("batch", args, `Executed ${completed} batch action(s) successfully.`);
+    },
+  );
 }

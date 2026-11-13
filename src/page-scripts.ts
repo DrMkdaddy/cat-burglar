@@ -24,7 +24,11 @@ export interface SnapshotData {
   textTruncated: boolean;
 }
 
-export function snapshotPage(args: { maxControls: number; maxText: number }): SnapshotData {
+export function snapshotPage(args: {
+  maxControls: number;
+  maxText: number;
+  viewportOnly?: boolean;
+}): SnapshotData {
   const w = window as any;
   // Refs are stable for as long as the element stays connected. A new snapshot
   // does not renumber existing controls, so an agent can safely use a ref it
@@ -66,6 +70,13 @@ export function snapshotPage(args: { maxControls: number; maxText: number }): Sn
     }
     const rect = el.getBoundingClientRect();
     return rect.width > 0 && rect.height > 0;
+  };
+
+  const inViewport = (el: Element): boolean => {
+    const rect = el.getBoundingClientRect();
+    const vpHeight = window.innerHeight || document.documentElement.clientHeight || 800;
+    const vpWidth = window.innerWidth || document.documentElement.clientWidth || 1280;
+    return rect.bottom > 0 && rect.right > 0 && rect.top < vpHeight && rect.left < vpWidth;
   };
 
   const textOf = (el: Element): string => {
@@ -226,6 +237,7 @@ export function snapshotPage(args: { maxControls: number; maxText: number }): Sn
     // Skip controls nested inside another control (e.g. a span in a button).
     if (el.parentElement?.closest("button, a[href], summary")) continue;
     if (!isVisible(el)) continue;
+    if (args.viewportOnly && !inViewport(el)) continue;
     eligible.push(el);
   }
 
@@ -294,6 +306,10 @@ export function snapshotPage(args: { maxControls: number; maxText: number }): Sn
   while (node) {
     const parent = node.parentElement;
     if (parent && isParentVisible(parent)) {
+      if (args.viewportOnly && !inViewport(parent)) {
+        node = walker.nextNode();
+        continue;
+      }
       const value = norm(node.nodeValue);
       if (value) {
         const last = textParts[textParts.length - 1];
